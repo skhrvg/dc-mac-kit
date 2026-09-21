@@ -1,0 +1,1339 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  Клиент HTTP API DualConnector (DC Linux Service).
+  Собирает запрос, показывает его в XML или JSON, отправляет в DC в windows-1251
+  и разбирает ответ: статус, ключевые поля, образ чека, все поля.
+  Открывается прямо из файла; DC отвечает с Access-Control-Allow-Origin: *.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Клиент DualConnector</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --text: #1b1f24; --muted: #5d6875;
+  --border: #dce1e7; --accent: #2457d6; --accent-contrast: #ffffff; --accent-soft: #e7edfc;
+  --ok: #12703a; --ok-soft: #e4f3e9; --err: #b3261e; --err-soft: #fbe7e5; --warn: #855700; --warn-soft: #fff3d6;
+  --code-bg: #f3f5f8; --code-text: #1f2a37; --paper: #fffef7; --paper-text: #1d1d1d; --paper-edge: #e6e1cf;
+  --radius: 10px; --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1f242c; --text: #e5e8ec; --muted: #9ba6b2;
+    --border: #2b323c; --accent: #7aa2ff; --accent-contrast: #0b1220; --accent-soft: #1c2742;
+    --ok: #74d39a; --ok-soft: #142a1d; --err: #ff8f86; --err-soft: #34191a; --warn: #f1c35a; --warn-soft: #2f2711;
+    --code-bg: #0c0f13; --code-text: #d5dee8; --paper: #f3f0e4; --paper-text: #1b1b1b; --paper-edge: #cfc9b3;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+
+/* ------------------------------------------------------------ шапка */
+.top {
+  position: relative; z-index: 5; display: flex; flex-wrap: wrap; align-items: end; gap: 10px 16px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; flex-direction: column; margin-right: auto; min-width: 180px; }
+.brand b { font-size: 16px; }
+.brand span { color: var(--muted); font-size: 12px; }
+.top label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.top .row { display: flex; gap: 6px; }
+.top input { width: 190px; }
+#tid { width: 120px; font-family: var(--mono); }
+
+input[type=text], input[type=number], select, textarea {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; min-height: 32px;
+}
+input:focus, select:focus, textarea:focus, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+input.invalid, select.invalid { border-color: var(--err); background: var(--err-soft); }
+input[readonly] { background: var(--panel-2); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--panel);
+  border-radius: 7px; padding: 6px 12px; min-height: 32px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--panel-2); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--border)); }
+.btn.small { min-height: 26px; padding: 3px 9px; font-size: 12.5px; }
+.btn.link { border: none; background: none; padding: 0; min-height: 0; color: var(--accent); }
+
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 6px 12px; min-height: 30px; cursor: pointer; }
+.seg button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 5px 12px; min-height: 32px;
+  border: 1px solid var(--border); background: var(--panel); cursor: pointer; font-size: 13px;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.pill.free .dot { background: var(--ok); }
+.pill.busy .dot { background: var(--warn); }
+.pill.offline .dot { background: var(--err); }
+
+/* ------------------------------------------------------------ раскладка */
+.layout {
+  display: grid; gap: 16px; padding: 16px; max-width: 1680px; margin: 0 auto;
+  grid-template-columns: 210px minmax(0, 1fr) minmax(0, 1fr); align-items: start;
+}
+@media (max-width: 1250px) {
+  .layout { grid-template-columns: 200px minmax(0, 1fr); }
+  .layout > aside { grid-column: 2; }
+}
+@media (max-width: 760px) {
+  .top input { width: 100%; }
+  .top label { flex: 1 1 140px; }
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .layout > aside { grid-column: auto; }
+  #opsList .group { display: flex; flex-wrap: wrap; gap: 4px; }
+  #opsList .group h4 { flex-basis: 100%; }
+  #opsList .op { width: auto; border-color: var(--border); }
+  .history { max-height: 190px; }
+}
+nav.ops { display: flex; flex-direction: column; gap: 14px; }
+@media (min-width: 1251px) {
+  .top { position: sticky; top: 0; }
+  nav.ops { position: sticky; top: 88px; max-height: calc(100vh - 100px); overflow: auto; }
+}
+#opsList { display: flex; flex-direction: column; gap: 14px; }
+.group h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.op {
+  display: flex; justify-content: space-between; align-items: baseline; width: 100%; text-align: left; gap: 8px;
+  border: 1px solid transparent; background: none; border-radius: 7px; padding: 7px 10px; cursor: pointer;
+}
+.op:hover { background: var(--panel-2); }
+.op[aria-current=true] { background: var(--accent-soft); color: var(--accent); font-weight: 600; border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+.op small { color: var(--muted); font-family: var(--mono); font-weight: 400; }
+.history { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow: auto; }
+.hist {
+  display: grid; grid-template-columns: auto 1fr; gap: 0 8px; text-align: left; font-size: 12.5px;
+  border: 1px solid var(--border); background: var(--panel); border-radius: 7px; padding: 6px 8px; cursor: pointer;
+}
+.hist:hover { background: var(--panel-2); }
+.hist .dot { margin-top: 5px; }
+.hist .t { color: var(--muted); font-size: 11.5px; }
+.hist.ok .dot { background: var(--ok); } .hist.err .dot { background: var(--err); } .hist.warn .dot { background: var(--warn); }
+.empty { color: var(--muted); font-size: 12.5px; }
+
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.card + .card { margin-top: 16px; }
+.card h2 { margin: 0; font-size: 18px; }
+.card h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.desc { color: var(--muted); margin: 4px 0 14px; }
+.opcode { font-family: var(--mono); color: var(--muted); font-size: 12.5px; }
+
+/* ------------------------------------------------------------ форма */
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px 14px; }
+.f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.f > label { font-weight: 600; font-size: 13px; display: flex; flex-wrap: wrap; column-gap: 6px; align-items: baseline; }
+.f > label .id { font-family: var(--mono); font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.req { color: var(--err); }
+.hint { color: var(--muted); font-size: 12px; }
+.err-msg { color: var(--err); font-size: 12px; }
+.money { position: relative; }
+.money input { width: 100%; padding-right: 30px; font-variant-numeric: tabular-nums; }
+.money span { position: absolute; right: 10px; top: 7px; color: var(--muted); pointer-events: none; }
+.f.wide { grid-column: 1 / -1; }
+.radios { display: flex; flex-direction: column; gap: 6px; }
+.radios label { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; cursor: pointer; }
+.radios label small { color: var(--muted); display: block; }
+details.section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+details.section > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 6px; }
+details.section > summary::before { content: "▸"; transition: transform .15s; }
+details.section[open] > summary::before { transform: rotate(90deg); }
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > .body { padding-top: 12px; }
+.note { background: var(--panel-2); border-radius: 8px; padding: 9px 11px; color: var(--muted); font-size: 12.5px; margin-top: 12px; }
+.note b { color: var(--text); }
+
+.extra { display: flex; flex-direction: column; gap: 8px; }
+.xrow { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+.xrow input.id { font-family: var(--mono); }
+.xrow .name { grid-column: 1 / -1; margin-top: -4px; }
+.xrow label.hexchk { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.actions .spacer { flex: 1; }
+.errors { margin: 12px 0 0; padding: 9px 12px 9px 28px; border-radius: 8px; background: var(--err-soft); color: var(--err); font-size: 13px; }
+.errors:empty { display: none; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------------ код */
+.tabs { display: flex; gap: 4px; }
+.tabs button { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
+.tabs button[aria-selected=true] { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+pre.code {
+  margin: 0; background: var(--code-bg); color: var(--code-text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 11px 12px; overflow: auto; max-height: 360px; font: 12.5px/1.5 var(--mono); white-space: pre;
+}
+pre.code.wrap { white-space: pre-wrap; word-break: break-all; }
+.code-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+/* ------------------------------------------------------------ ответ */
+.banner { border-radius: 9px; padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start; }
+.banner .big { font-size: 17px; font-weight: 700; }
+.banner .sub { margin-top: 2px; }
+.banner .meta { margin-left: auto; text-align: right; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.banner.ok { background: var(--ok-soft); color: var(--ok); }
+.banner.err { background: var(--err-soft); color: var(--err); }
+.banner.warn { background: var(--warn-soft); color: var(--warn); }
+.banner.info { background: var(--panel-2); color: var(--text); }
+.banner .sub, .banner .extra-hint { color: var(--text); }
+.extra-hint { font-size: 12.5px; margin-top: 6px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 14px; margin: 14px 0 4px; }
+.fact .k { color: var(--muted); font-size: 12px; }
+.fact .v { font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.fact .v.mono { font-family: var(--mono); font-weight: 500; }
+.resp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 2px; }
+.block { margin-top: 18px; }
+.slips { display: flex; flex-wrap: wrap; gap: 14px; }
+.slip { display: flex; flex-direction: column; gap: 6px; }
+.slip .cap { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.slip pre {
+  margin: 0; background: var(--paper); color: var(--paper-text); border: 1px solid var(--paper-edge); border-radius: 4px;
+  padding: 12px 14px; font: 12px/1.35 var(--mono); white-space: pre; overflow: auto; max-width: 100%;
+  box-shadow: 0 1px 0 var(--paper-edge), 0 6px 14px rgba(0,0,0,.06);
+}
+table.ftab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ftab th, .ftab td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ftab th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.ftab td.num { font-family: var(--mono); color: var(--muted); width: 44px; }
+.ftab td.val { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.ftab td.nm small { display: block; color: var(--muted); font-size: 11.5px; }
+.tag { display: inline-block; font-size: 10.5px; padding: 0 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); margin-left: 4px; font-family: var(--sans); }
+.placeholder { color: var(--muted); padding: 26px 8px; text-align: center; }
+.placeholder b { color: var(--text); display: block; margin-bottom: 4px; }
+.waiting { display: flex; gap: 12px; align-items: center; padding: 18px 4px; }
+.waiting .spin { width: 22px; height: 22px; border-width: 3px; color: var(--accent); }
+
+.toast {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--text); color: var(--panel);
+  padding: 9px 14px; border-radius: 8px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.2); z-index: 20;
+  opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px);
+}
+.toast.show { opacity: 1; }
+footer { color: var(--muted); font-size: 12px; padding: 0 16px 24px; max-width: 1680px; margin: 0 auto; }
+footer code { font-size: 11.5px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><b>Клиент DualConnector</b><span>запросы к HTTP API DC Service</span></div>
+  <label>Адрес DC
+    <input type="text" id="dcUrl" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:9015">
+  </label>
+  <label>TerminalID (поле 27)
+    <span class="row">
+      <input type="text" id="tid" spellcheck="false" autocomplete="off" placeholder="00199991">
+      <button class="btn" id="tidDiscover" type="button" title="Спросить TerminalID у терминала тестом связи">Узнать</button>
+    </span>
+  </label>
+  <label>Формат
+    <span class="seg" role="group" aria-label="Формат обмена">
+      <button type="button" data-fmt="xml" aria-pressed="true">XML</button>
+      <button type="button" data-fmt="json" aria-pressed="false">JSON</button>
+    </span>
+  </label>
+  <label>DC
+    <button class="pill" id="statusPill" type="button" title="Проверить состояние DC (GET /)"><span class="dot"></span><span id="statusText">не проверен</span></button>
+  </label>
+</header>
+
+<div class="layout">
+  <nav class="ops" aria-label="Операции">
+    <div id="opsList"></div>
+    <div class="group">
+      <h4>История</h4>
+      <div class="history" id="history"><div class="empty">Пока пусто</div></div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="card" id="formCard" aria-labelledby="opTitle">
+      <div class="card-head">
+        <h2 id="opTitle">Оплата</h2>
+        <span class="opcode" id="opCode"></span>
+      </div>
+      <p class="desc" id="opDesc"></p>
+      <form id="opForm" novalidate autocomplete="off">
+        <div class="fields" id="reqFields"></div>
+        <div id="opNote"></div>
+        <details class="section" id="optSection">
+          <summary>Необязательные поля</summary>
+          <div class="body"><div class="fields" id="optFields"></div></div>
+        </details>
+        <details class="section" id="extraSection">
+          <summary>Дополнительные поля SA</summary>
+          <div class="body">
+            <p class="hint" style="margin:0 0 10px">Любое поле протокола SA по номеру. Название подставится само. «HEX» — значение передаётся HEX-строкой и превращается в байты.</p>
+            <div class="extra" id="extraRows"></div>
+            <button class="btn small" type="button" id="addExtra" style="margin-top:10px">+ Добавить поле</button>
+          </div>
+        </details>
+        <details class="section" id="paramSection">
+          <summary>Параметры запроса</summary>
+          <div class="body">
+            <div class="fields">
+              <div class="f">
+                <label for="p_timeout">Таймаут операции <span class="id">&lt;timeout&gt;</span></label>
+                <input type="number" id="p_timeout" min="0" step="1" value="180">
+                <span class="hint">Секунды. 0 — ждать бесконечно. Вендор рекомендует 180.</span>
+              </div>
+              <div class="f">
+                <label for="p_session">Идентификатор сессии <span class="id">&lt;sessionID&gt;</span></label>
+                <input type="text" id="p_session" placeholder="создаётся сам" spellcheck="false">
+                <span class="hint">Пусто — новый на каждый запрос. Повтор закрытой сессии даст ошибку 17.</span>
+              </div>
+              <div class="f">
+                <label for="p_route">Куда отправить</label>
+                <select id="p_route">
+                  <option value="config">Терминал из connector.xml</option>
+                  <option value="ip">IP-терминал (ipaddr)</option>
+                  <option value="com">Терминал на порту (ncom)</option>
+                </select>
+              </div>
+              <div class="f" id="routeIpBox" hidden>
+                <label for="p_ipaddr">Адрес терминала <span class="id">&lt;ipaddr&gt;</span></label>
+                <input type="text" id="p_ipaddr" placeholder="192.168.1.100:9000" spellcheck="false">
+                <span class="hint">Строго A.B.C.D:порт. Имя хоста DC молча проигнорирует. Мост paxbridge — 127.0.0.1:27016.</span>
+              </div>
+              <div class="f" id="routeComBox" hidden>
+                <label for="p_ncom">Порт <span class="id">&lt;ncom&gt;</span></label>
+                <input type="text" id="p_ncom" placeholder="/dev/cu.usbmodem1101" spellcheck="false">
+              </div>
+              <div class="f" id="routeBaudBox" hidden>
+                <label for="p_baud">Скорость <span class="id">&lt;baudrate&gt;</span></label>
+                <input type="number" id="p_baud" placeholder="115200" min="1200" step="1">
+              </div>
+            </div>
+          </div>
+        </details>
+        <ul class="errors" id="errors" role="alert"></ul>
+        <div class="actions">
+          <button class="btn primary" type="submit" id="sendBtn">Отправить</button>
+          <button class="btn danger" type="button" id="abortBtn" title="POST /command/closeOpenConnection — DC шлёт терминалу EOT и закрывает соединение">Прервать операцию</button>
+          <span class="spacer"></span>
+          <button class="btn" type="button" id="resetBtn">Очистить поля</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card" id="previewCard">
+      <div class="card-head">
+        <h3 style="margin:0">Запрос</h3>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-ptab="body" aria-selected="true">Тело</button>
+          <button type="button" role="tab" data-ptab="curl" aria-selected="false">curl</button>
+        </div>
+      </div>
+      <p class="hint" id="previewHint" style="margin:4px 0 8px"></p>
+      <pre class="code" id="preview"></pre>
+      <div class="code-actions">
+        <button class="btn small" type="button" id="copyPreview">Копировать</button>
+      </div>
+    </section>
+  </main>
+
+  <aside>
+    <section class="card" id="respCard" aria-live="polite">
+      <div class="card-head"><h3 style="margin:0">Ответ</h3><span class="hint" id="respMeta"></span></div>
+      <div id="respBody">
+        <div class="placeholder"><b>Ответа пока нет</b>Выберите операцию, заполните поля и нажмите «Отправить».</div>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<footer>
+  Страница работает прямо из файла: DC разрешает кросс-доменные запросы (<code>Access-Control-Allow-Origin: *</code>).
+  Если браузер всё же не пускает запросы из <code>file://</code>, откройте её через локальный сервер:
+  <code>python3 -m http.server 8080 --bind 127.0.0.1</code> в папке с файлом, затем <code>http://127.0.0.1:8080/dc-client.html</code>.
+  Тела запросов уходят в windows-1251, как ждёт DC. Описание полей и операций — в README, раздел «HTTP API DualConnector».
+</footer>
+
+<div class="toast" id="toast" role="status"></div>
+<datalist id="fieldNames"></datalist>
+
+<script>
+'use strict';
+(() => {
+// ================================================================ утилиты
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, '');
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('dcclient.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('dcclient.' + k, JSON.stringify(v)); } catch { /* приватный режим и т. п. */ } },
+};
+let toastTimer;
+function toast(msg, ms = 2600) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Скопировано'); return; } catch { /* fallback ниже */ }
+  const ta = h('textarea', { style: 'position:fixed;left:-9999px;top:0' }); ta.value = text; document.body.append(ta); ta.select();
+  try { document.execCommand('copy'); toast('Скопировано'); } catch { toast('Не удалось скопировать'); }
+  ta.remove();
+}
+function printText(text) {
+  const f = h('iframe', { style: 'position:fixed;right:0;bottom:0;width:0;height:0;border:0', title: 'печать' });
+  document.body.append(f);
+  const d = f.contentDocument;
+  d.open();
+  d.write('<!doctype html><html><head><meta charset="utf-8"><title>Чек</title><style>body{margin:0}pre{font:12px/1.3 ui-monospace,Menlo,Consolas,monospace;margin:6mm;white-space:pre}</style></head><body><pre></pre></body></html>');
+  d.close();
+  d.querySelector('pre').textContent = text;
+  f.contentWindow.focus(); f.contentWindow.print();
+  setTimeout(() => f.remove(), 1500);
+}
+const pad2 = n => String(n).padStart(2, '0');
+function hhmmss(d) { return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; }
+
+// ================================================================ windows-1251
+// DC ждёт тело в windows-1251. TextEncoder умеет только UTF-8, поэтому таблицу
+// кодировщика строим обращением штатного TextDecoder('windows-1251').
+const CP1251 = (() => {
+  const m = new Map(), dec = new TextDecoder('windows-1251');
+  for (let b = 0x80; b <= 0xFF; b++) { const ch = dec.decode(new Uint8Array([b])); if (ch !== '�') m.set(ch, b); }
+  return m;
+})();
+function encode1251(str) {
+  const out = new Uint8Array(str.length); let i = 0;
+  for (const ch of str) { const c = ch.codePointAt(0); out[i++] = c < 0x80 ? c : (CP1251.get(ch) ?? 0x3F); }
+  return out.subarray(0, i);
+}
+function badChars(str) {
+  const s = new Set();
+  for (const ch of str) if (ch.codePointAt(0) >= 0x80 && !CP1251.has(ch)) s.add(ch);
+  return [...s];
+}
+function decodeBytes(buf, charset) {
+  try { return new TextDecoder(charset || 'windows-1251').decode(buf); }
+  catch { return new TextDecoder('windows-1251').decode(buf); }
+}
+function hexToBytes(hex) {
+  const s = hex.replace(/\s+/g, ''); if (!/^([0-9a-fA-F]{2})*$/.test(s)) return null;
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+  return out;
+}
+
+// ================================================================ справочники
+// Номера полей — перечисление SAParam$ID из dcservice.jar, смысл — приложение 6.1
+// руководства «DC Linux Service. Руководство программиста».
+const FIELD_NAMES = {
+  0: 'Сумма операции', 1: 'Дополнительная сумма', 4: 'Код валюты', 5: 'Код валюты расчётов',
+  6: 'Дата и время на хосте', 7: 'Дата и время расчётов', 8: 'Способ ввода карты', 9: 'Способ ввода PIN',
+  10: 'Номер карты', 11: 'Срок действия карты', 12: 'Данные Track2', 13: 'Код авторизации', 14: 'RRN, номер ссылки',
+  15: 'Код ответа хоста', 16: 'PIN-блок', 17: 'Рабочий ключ PIN', 18: 'Рабочий ключ MAC', 19: 'Текст ответа',
+  21: 'Дата и время на терминале', 23: 'ID транзакции в комм. сервере', 24: 'ID терминала на хосте', 25: 'Код операции',
+  26: 'Номер транзакции на терминале', 27: 'TerminalID', 28: 'MerchantID', 29: 'Сумма дебетовых итогов',
+  30: 'Количество дебетовых итогов', 31: 'Сумма кредитовых итогов', 32: 'Количество кредитовых итогов', 33: 'Номер пакета',
+  34: 'Код исходной операции', 36: 'MAC', 37: 'ID хоста', 39: 'Статус транзакции', 40: 'Track2 карты администратора',
+  41: 'PIN-блок карты администратора', 42: 'Номер карты администратора', 43: 'Срок карты администратора', 44: 'Данные Track1',
+  46: 'Режим Track2', 47: 'CVV2', 48: 'Алгоритм шифрования', 49: 'Сумма дебетовых отмен', 50: 'Количество дебетовых отмен',
+  51: 'Сумма кредитовых отмен', 52: 'Количество кредитовых отмен', 53: 'Флаг обработки', 54: 'ID транзакции на хосте',
+  55: 'Данные EMV', 56: 'Адрес получателя', 57: 'Таймаут ожидания карты', 59: 'Зашифрованные данные', 60: 'Имя файла',
+  61: 'ID файла', 62: 'Тип устройства', 63: 'Серийный номер терминала', 64: 'Режим команды', 65: 'Режим команды 2',
+  66: 'Режим команды 3', 67: 'Результат команды', 68: 'Длина данных', 69: 'MD5 данных', 70: 'Данные (файл)',
+  71: 'Сообщение для экрана терминала', 72: 'Случайное число', 73: 'Тип данных', 74: 'Дата и время файла', 75: 'ID мастер-ключа',
+  76: 'Запрос к кассиру', 77: 'Ответ кассира', 78: 'Признак EMV', 79: 'Тип счёта', 80: 'Код платежа', 81: 'Детали платежа',
+  82: 'Код провайдера', 84: 'Физический номер устройства', 85: 'Команда журнала', 86: 'Доп. данные транзакции',
+  87: 'Файл результата', 88: 'Файл отчёта', 89: 'Модель терминала', 90: 'Образ чека', 91: 'Теги Pulsar', 94: 'Текущее время',
+  95: 'Новый PIN-блок', 96: 'Шаг обработки', 97: 'Данные Track3', 102: 'Настройки приложения', 103: 'Версия ОС терминала',
+  104: 'ID терминала в банке', 105: 'Название банка', 106: 'Статус ответа DC', 107: 'Статус завершения на кассе',
+  108: 'Номер чека', 110: 'ID соединения', 111: 'Макс. длина данных',
+};
+// Поле 39 — перечисление SAParam$STATUS из dcservice.jar.
+const STATUS = {
+  '0': ['Статус не определён', 'warn'], '1': ['Одобрено', 'ok'], '13': ['Аварийная отмена', 'err'], '16': ['Отказано', 'err'],
+  '17': ['Одобрено офлайн', 'warn'], '34': ['Нет связи', 'err'], '53': ['Операция прервана', 'err'],
+};
+// errorcode — раздел 3 руководства.
+const DC_ERRORS = {
+  '0': ['DC не смог передать ответ терминала', 'Внутренняя ошибка DC. Исход операции неизвестен — запросите копию последнего чека.'],
+  '1': ['Истёк таймаут операции', 'Сработал <timeout> запроса. Исход операции неизвестен — запросите копию последнего чека.'],
+  '3': ['Общая ошибка DC', 'Ошибка параметров DC, неподдерживаемый метод HTTP или иная ошибка сервиса. Смотрите лог: dcctl log.'],
+  '4': ['Ошибка поля или запроса', 'Битый XML/JSON, неверное поле или кодировка — между кассой и DC или между DC и терминалом.'],
+  '13': ['Ошибка обмена с терминалом', 'Устройство не открылось, не ответило или ответило не по протоколу SA. Проверьте dcctl check, адрес терминала и режим связи на нём.'],
+  '15': ['Обмен прерван', 'Остановка DC, команда «Прервать операцию» или другой обмен. Если прерывали во время оплаты — проверьте копию последнего чека.'],
+  '16': ['Устройство занято', 'Терминал занят другим обменом. Сразу после операции DC ещё секунду-две завершает сеанс — повторите чуть позже.'],
+  '17': ['Сессия уже закрыта', 'Запрос с sessionID уже завершённой сессии. Оставьте поле «Идентификатор сессии» пустым — он создаётся сам.'],
+};
+const OP_NAMES = {
+  1: 'Оплата', 2: 'Выдача наличных', 3: 'Возврат (SAO_REFUND)', 4: 'Отмена', 13: 'Баланс', 14: 'Авторизация',
+  15: 'Предавторизация', 16: 'Завершение предавторизации', 18: 'Журнал операций', 26: 'Тест связи', 29: 'Возврат', 52: 'Запрос кассиру',
+  41: 'Сообщение или QR-код на экране терминала', 53: 'Реверсал', 59: 'Сверка итогов', 63: 'Служебная операция (отчёты, копии чеков)', 71: 'SAO_CREDIT_VOUCHER', 76: 'Загрузка ключей',
+};
+// СБП: код ответа в поле 15 — так его расшифровывает DC Service Control (dccontrol.jar).
+const SBP_CODES = {
+  R00: ['Операция завершена успешно', 'ok', ''],
+  R01: ['Операция в обработке', 'warn', 'Покупатель ещё не оплатил или банк не ответил. Запросите статус чуть позже.'],
+  R10: ['Операция отклонена', 'err', ''],
+  R11: ['Операции по QR-коду не существует', 'err', 'Проверьте идентификатор операции: при оплате он уходит в поле 14, при запросе статуса — в поле 13.'],
+  R12: ['Не получен ответ на запрос', 'warn', ''],
+  R13: ['Запрос статуса не отправлен', 'warn', ''],
+  R14: ['Операция не добавлена в базу транзакций терминала', 'err', ''],
+};
+// Результат вывода на экран терминала (операция 41) — поле 67.
+const SCREEN_RESULT = { '0': ['QR-код выведен на экран терминала', 'ok'], '3': ['Ошибка вывода на экран терминала', 'err'] };
+const CURRENCIES = [
+  ['643', 'RUB — российский рубль', '₽'], ['933', 'BYN — белорусский рубль', 'BYN'], ['398', 'KZT — тенге', '₸'],
+  ['156', 'CNY — юань', '¥'], ['840', 'USD — доллар США', '$'], ['978', 'EUR — евро', '€'],
+];
+const curSign = code => (CURRENCIES.find(c => c[0] === code) || [])[2] || code || '';
+
+// ================================================================ операции
+const randomDigits = n => { const a = new Uint8Array(n); crypto.getRandomValues(a); return [...a].map(x => x % 10).join(''); };
+const F = {
+  amount: () => ({ key: 'amount', id: 0, kind: 'money', label: 'Сумма', required: true, hint: 'В рублях с копейками: 150 или 150.50' }),
+  currency: () => ({ key: 'currency', id: 4, kind: 'currency', label: 'Валюта', required: true, def: '643' }),
+  rrn: () => ({ key: 'rrn', id: 14, kind: 'text', label: 'RRN — номер ссылки', mono: true, hint: 'Поле 14 из ответа на оплату, обычно 12 цифр', pattern: /^\d{1,20}$/, patternMsg: 'только цифры' }),
+  auth: () => ({ key: 'auth', id: 13, kind: 'text', label: 'Код авторизации', mono: true, hint: 'Поле 13 из ответа на оплату', pattern: /^[0-9A-Za-z]{1,12}$/, patternMsg: 'латиница и цифры, до 12 символов' }),
+  stan: () => ({ key: 'stan', id: 26, kind: 'text', label: 'Номер транзакции', mono: true, hint: 'Уникальный номер операции. DC Service Control его не передаёт', pattern: /^\d{1,10}$/, patternMsg: 'только цифры' }),
+  sbpId: () => ({ key: 'sbpId', id: 14, kind: 'genid', len: 7, label: 'Идентификатор операции кассы', required: true, mono: true,
+    hint: 'Придумывает касса; по нему потом запрашивается статус. DC Service Control шлёт 7 случайных цифр', pattern: /^[0-9A-Za-z]{1,32}$/, patternMsg: 'латиница и цифры, до 32 символов' }),
+  sbpRef: () => ({ key: 'sbpRef', id: 13, kind: 'text', label: 'Идентификатор операции кассы', required: true, mono: true,
+    hint: 'Тот, что ушёл в поле 14 при оплате СБП или запросе QR-кода', pattern: /^[0-9A-Za-z]{1,32}$/, patternMsg: 'латиница и цифры, до 32 символов' }),
+  sbpPay: () => ({ key: 'sbpPay', id: 13, kind: 'text', label: 'Идентификатор оплаты', required: true, mono: true,
+    hint: 'Поле 14 из ответа на оплату СБП или поле 13 из ответа на запрос статуса', pattern: /^\S{1,64}$/, patternMsg: 'без пробелов, до 64 символов' }),
+  refundId: () => ({ key: 'refundId', id: 14, kind: 'genid', len: 32, label: 'Идентификатор возврата', required: true, mono: true,
+    hint: 'Придумывает касса. DC Service Control шлёт 32 случайные цифры', pattern: /^[0-9A-Za-z]{1,32}$/, patternMsg: 'латиница и цифры, до 32 символов' }),
+  refundRef: () => ({ key: 'refundRef', id: 14, kind: 'text', label: 'Идентификатор возврата', required: true, mono: true,
+    hint: 'Поле 13 из ответа на возврат СБП, а если его нет — то, что ушло в поле 14', pattern: /^\S{1,64}$/, patternMsg: 'без пробелов, до 64 символов' }),
+  repeat: () => ({ key: 'repeat', kind: 'check', label: 'Повторять, пока «в обработке»', def: '1',
+    hint: 'Каждые 2 с, пока в поле 15 приходит R01, но не дольше 3 минут. Остановить — «Прервать операцию»' }),
+};
+const UNDOC_NOTE = 'Состав полей для этой операции в документации DC не описан. Если терминал ответит ошибкой поля, добавьте нужные в «Дополнительные поля SA».';
+const SBP_NOTE = 'Коды операций и состав полей взяты из утилиты вендора DC Service Control (вкладка «Проверка СБП»). Работает, только если СБП подключена у банка и настроена на терминале.';
+const OPS = [
+  { key: 'sale', group: 'Платежи', title: 'Оплата', code: 1, verified: true,
+    desc: 'Списание с карты покупателя. Успех — только статус 39 = 1; отказ банка приходит обычным ответом, а не ошибкой DC.',
+    req: [F.amount(), F.currency()], opt: [F.stan()] },
+  { key: 'void', group: 'Платежи', title: 'Отмена', code: 4, verified: true, fill: true, openOpt: true,
+    desc: 'Отмена оплаты до сверки итогов. Чтобы отменить конкретную оплату, укажите её RRN и код авторизации.',
+    req: [F.amount(), F.currency()], opt: [F.rrn(), F.auth(), F.stan()],
+    note: 'Без RRN и кода авторизации на PAX D230 отменилась последняя оплата. Утилита вендора DC Service Control (опция «Доп. поля для Отмены») передаёт поля 13 и 14 из ответа на оплату.' },
+  { key: 'refund', group: 'Платежи', title: 'Возврат', code: 29, fill: true, openOpt: true,
+    desc: 'Возврат на карту — когда оплата уже вошла в сверку итогов и отменить её нельзя.',
+    req: [F.amount(), F.currency()], opt: [F.rrn(), F.auth(), F.stan()],
+    note: 'Нужны ли RRN и код авторизации, зависит от ПО терминала и настроек банка.' },
+  { key: 'reversal', group: 'Платежи', title: 'Реверсал', code: 53, fill: true, openOpt: true,
+    desc: 'Аварийная отмена: оплата прошла на терминале, но касса не получила ответ или не смогла её завершить. Передайте сумму и данные исходной операции.',
+    req: [F.amount(), F.currency()],
+    opt: [F.rrn(), F.auth(), F.stan(),
+      { key: 'orig', id: 34, kind: 'select', label: 'Код исходной операции', def: '', hint: 'Поле 34 — какую операцию отменяем',
+        options: [['', 'Не передавать'], ['1', '1 — оплата'], ['4', '4 — отмена'], ['29', '29 — возврат']] }],
+    note: UNDOC_NOTE },
+  { key: 'test', group: 'Служебные', title: 'Тест связи', code: 26, verified: true, tidOptional: true,
+    desc: 'Проверка канала связи. Окон кассиру на тесте связи терминал не присылает никогда.',
+    req: [{ key: 'mode', kind: 'radio', label: 'Что проверять', def: 'host', options: [
+      { v: 'host', label: 'Связь с банком', sub: 'Терминал выходит на хост банка. Проверено на D230', fields: {} },
+      { v: 'term', label: 'Только связь с терминалом', sub: 'Поле 53 = 1, без выхода на хост — так делает DC Service Control', fields: { 53: '1' } },
+    ] }] },
+  { key: 'balance', group: 'Служебные', title: 'Баланс карты', code: 13,
+    desc: 'Остаток на карте: покупатель прикладывает карту, терминал запрашивает баланс у банка. Результат — в полях ответа и в образе чека, если терминал его печатает.',
+    req: [F.currency()], note: UNDOC_NOTE },
+  { key: 'settle', group: 'Служебные', title: 'Сверка итогов', code: 59,
+    desc: 'Закрытие смены: терминал сверяет итоги с банком и печатает отчёт. После сверки оплаты за смену уже не отменить — только вернуть. В поле 89 DC добавит сведения о себе (тег CON).', req: [] },
+  { key: 'txlog', group: 'Служебные', title: 'Журнал операций', code: 18,
+    desc: 'Список операций, проведённых терминалом. Если терминал формирует образ журнала, он придёт в поле 90.',
+    req: [], note: UNDOC_NOTE },
+  { key: 'report', group: 'Служебные', title: 'Отчёт', code: 63,
+    desc: 'Отчёт по операциям с последней сверки итогов. Образ отчёта придёт в поле 90.',
+    req: [{ key: 'kind', id: 65, kind: 'select', label: 'Вид отчёта', def: '20', options: [['20', 'Краткий (65 = 20)'], ['21', 'Полный (65 = 21)']] }] },
+  { key: 'copy', group: 'Служебные', title: 'Копия последнего чека', code: 63, fixed: { 64: '1', 65: '22' },
+    desc: 'Повтор образа чека последней операции (64 = 1, 65 = 22). Выручает, когда ответ на оплату потерялся: по копии видно, прошла ли она.', req: [] },
+  { key: 'keys', group: 'Служебные', title: 'Загрузка ключей', code: 76,
+    desc: 'Загрузка ключей шифрования с хоста банка. Обычно нужна только по просьбе банка.',
+    req: [{ key: 'ktype', id: 64, kind: 'select', label: 'Тип ключей', def: '1', options: [['1', 'На усмотрение терминала'], ['2', 'Мастер-ключи'], ['3', 'Рабочие ключи'], ['4', 'Ключи QR Pay (AliPay/WeChat)']] }] },
+  { key: 'sbpSale', group: 'СБП', title: 'Оплата СБП', code: 1, fixed: { 53: '115' }, sbp: true,
+    desc: 'Оплата через Систему быстрых платежей: терминал показывает QR-код, покупатель платит из приложения банка. Если ответ пришёл с кодом R01 «в обработке», запросите статус.',
+    req: [F.amount(), F.currency(), F.sbpId()], note: SBP_NOTE },
+  { key: 'sbpQr', group: 'СБП', title: 'Запрос QR-кода СБП', code: 1, fixed: { 53: '116' }, sbp: true,
+    desc: 'QR-код для оплаты отдаётся кассе — чтобы показать его на экране кассы или покупателя. Дальше — «Статус оплаты СБП». Доступно не у всех банков — агентов СБП.',
+    req: [F.amount(), F.currency(), F.sbpId()],
+    note: SBP_NOTE + ' В каком поле приходит QR-код, вендор не описывает: страница ищет ссылку во всех полях ответа.' },
+  { key: 'sbpStatus', group: 'СБП', title: 'Статус оплаты СБП', code: 1, fixed: { 53: '117' }, sbp: true, poll: true, openOpt: true,
+    desc: 'Узнать, чем закончилась оплата СБП. Идентификатор — тот, что касса передала при оплате или запросе QR-кода.',
+    req: [F.amount(), F.currency(), F.sbpRef()], opt: [F.repeat()], note: SBP_NOTE },
+  { key: 'sbpRefund', group: 'СБП', title: 'Возврат СБП', code: 29, fixed: { 53: '118' }, sbp: true,
+    desc: 'Возврат денег по оплате СБП. Нужен идентификатор оплаты из её ответа (поле 14).',
+    req: [F.amount(), F.currency(), F.sbpPay(), F.refundId()], note: SBP_NOTE },
+  { key: 'sbpRefundStatus', group: 'СБП', title: 'Статус возврата СБП', code: 29, fixed: { 53: '119' }, sbp: true, poll: true, openOpt: true,
+    desc: 'Узнать, чем закончился возврат СБП.',
+    req: [F.amount(), F.currency(), F.refundRef()], opt: [F.repeat()], note: SBP_NOTE },
+  { key: 'screenQr', group: 'Экран терминала', title: 'QR-код на экране', code: 41, fixed: { 64: '5' }, tidOptional: true,
+    desc: 'Показать на экране терминала QR-код с любым текстом или ссылкой — например, ссылкой на оплату, полученной «Запросом QR-кода СБП». Покупатель сканирует его телефоном.',
+    req: [{ key: 'qrText', id: 86, kind: 'qrtlv', label: 'Содержимое QR-кода', required: true, def: 'Если вы это видите — всё хорошо.',
+            hint: 'Текст или ссылка. Уходит в поле 86 как TLV: тег F6, внутри тег D1 с текстом в UTF-8' },
+          { key: 'life', id: 57, kind: 'text', label: 'Время показа', def: '30', required: true, mono: true, pattern: /^\d{1,4}$/, patternMsg: 'целое число секунд',
+            hint: 'Секунды, поле 57. DC Service Control по умолчанию ставит 10' }],
+    note: 'Состав запроса — как у кнопки «Вывод QR-кода СБП на экран POS-терминала» в DC Service Control: операция 41, режим 64 = 5. Утилита вендора шлёт эту операцию без TerminalID; страница добавляет поле 27, если оно задано в шапке. Результат приходит в поле 67: 0 — выведено, 3 — ошибка.' },
+  { key: 'custom', group: 'Прочее', title: 'Произвольный запрос', code: null, openExtra: true,
+    desc: 'Любой код операции и любой набор полей. Поля добавляются в разделе «Дополнительные поля SA».',
+    req: [{ key: 'opcode', id: 25, kind: 'opcode', label: 'Код операции', required: true, hint: 'Поле 25. Например 1 — оплата, 26 — тест связи' }] },
+];
+
+// ================================================================ состояние
+const state = {
+  op: OPS[0],
+  fmt: store.get('fmt', 'xml') === 'json' ? 'json' : 'xml',
+  values: {},          // values[op.key][field.key]
+  extra: {},           // extra[op.key] = [{id, value, hex}]
+  touched: new Set(),  // поля, по которым уже показываем ошибки
+  history: [],
+  sending: false,
+  lastSale: null,      // последняя одобренная оплата — для «подставить в отмену»
+  ptab: 'body',
+  nextSession: null,
+  shown: null,
+};
+const newSession = () => String(Date.now()) + String(Math.floor(Math.random() * 900) + 100);
+state.nextSession = newSession();
+
+function val(op, spec) {
+  const v = (state.values[op.key] || {})[spec.key];
+  if (v === undefined && spec.kind === 'genid') { const g = randomDigits(spec.len || 7); setVal(op, spec, g); return g; }
+  return v === undefined ? (spec.def ?? '') : v;
+}
+
+// Поле 86 для вывода QR-кода: BER-TLV F6 { D1 <текст в UTF-8> }, в запросе — HEX с hex="true".
+// Без hex="true" DC отправил бы на терминал сами символы HEX-строки, а не байты (проверено).
+const utf8 = new TextEncoder();
+const berLen = n => n < 0x80 ? [n] : n < 0x100 ? [0x81, n] : [0x82, n >> 8, n & 0xFF];
+const tlv = (tag, bytes) => [tag, ...berLen(bytes.length), ...bytes];
+const toHex = bytes => bytes.map(x => x.toString(16).padStart(2, '0').toUpperCase()).join('');
+function qrTlv(text) { const b = [...utf8.encode(text)]; return { hex: toHex(tlv(0xF6, tlv(0xD1, b))), bytes: b.length }; }
+function setVal(op, spec, v) { (state.values[op.key] ||= {})[spec.key] = v; }
+function extraRows(op) { return (state.extra[op.key] ||= []); }
+
+function baseUrl() {
+  let u = $('#dcUrl').value.trim() || 'http://127.0.0.1:9015';
+  if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+  return u.replace(/\/+$/, '');
+}
+
+// ================================================================ проверки
+function parseMoney(s) {
+  const t = String(s).trim().replace(/\s+/g, '').replace(',', '.');
+  if (!t) return { empty: true };
+  const m = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(t);
+  if (!m) return { error: 'число с точкой или запятой, до двух знаков после неё' };
+  const kop = m[1].replace(/^0+(?=\d)/, '') + (m[2] || '').padEnd(2, '0');
+  const norm = kop.replace(/^0+(?=\d)/, '');
+  if (/^0+$/.test(norm)) return { error: 'сумма должна быть больше нуля' };
+  return { kop: norm };
+}
+function fmtMoney(kop, cur) {
+  if (!/^\d+$/.test(kop || '')) return kop;
+  const s = kop.padStart(3, '0'), rub = s.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ' '), k = s.slice(-2);
+  return `${rub}.${k} ${curSign(cur || '643')}`;
+}
+function fmtStamp(v) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(v || '');
+  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}:${m[6]}` : v;
+}
+function validIp(s) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}):(\d{1,5})$/.exec(s);
+  return !!m && m.slice(1, 5).every(o => +o <= 255) && +m[5] > 0 && +m[5] <= 65535;
+}
+
+// Проверяет форму и собирает поля запроса. discover — тест связи без поля 27,
+// чтобы узнать TerminalID из ответа.
+function collect({ discover = false } = {}) {
+  const op = discover ? OPS.find(o => o.key === 'test') : state.op;
+  const errors = [], fieldErr = {}, fields = new Map();
+  const put = (id, value, hex = false) => fields.set(Number(id), { id: Number(id), value: String(value), hex });
+
+  let code = op.code;
+  if (op.key === 'custom') {
+    const raw = String(val(op, op.req[0])).trim();
+    if (!raw) fieldErr.opcode = 'укажите код операции';
+    else if (!/^\d{1,3}$/.test(raw) || +raw > 255) fieldErr.opcode = 'целое число 0–255';
+    else code = +raw;
+  }
+  if (code != null) put(25, code);
+
+  const specs = discover ? [] : [...(op.req || []), ...(op.opt || [])];
+  let cur = '643';
+  for (const spec of specs) {
+    if (spec.kind === 'opcode' || spec.kind === 'check') continue;
+    const v = spec.kind === 'qrtlv' ? String(val(op, spec)) : String(val(op, spec)).trim();
+    if (spec.kind === 'radio') {
+      const o = spec.options.find(x => x.v === v) || spec.options[0];
+      for (const [id, fv] of Object.entries(o.fields)) put(id, fv);
+      continue;
+    }
+    if (!v) { if (spec.required) fieldErr[spec.key] = 'обязательное поле'; continue; }
+    if (spec.kind === 'money') {
+      const r = parseMoney(v);
+      if (r.error) fieldErr[spec.key] = r.error; else put(spec.id, r.kop);
+    } else if (spec.kind === 'currency') {
+      if (!/^\d{3}$/.test(v)) fieldErr[spec.key] = 'три цифры по ISO 4217, например 643'; else { put(spec.id, v); cur = v; }
+    } else if (spec.kind === 'qrtlv') {
+      const q = qrTlv(v);
+      if (q.bytes > 2000) fieldErr[spec.key] = `слишком длинно: ${q.bytes} байт`; else put(spec.id, q.hex, true);
+    } else if (spec.pattern && !spec.pattern.test(v)) {
+      fieldErr[spec.key] = spec.patternMsg || 'неверный формат';
+    } else put(spec.id, v);
+  }
+  if (!discover) for (const [id, fv] of Object.entries(op.fixed || {})) put(id, fv);
+
+  const tid = $('#tid').value.trim();
+  if (!discover) {
+    if (tid) {
+      if (/\s/.test(tid)) errors.push('TerminalID не должен содержать пробелов');
+      else put(27, tid);
+    } else if (!op.tidOptional) {
+      errors.push('Укажите TerminalID в шапке — терминал ждёт поле 27 в каждой операции. Не знаете его — нажмите «Узнать».');
+    }
+  }
+
+  if (!discover) extraRows(op).forEach((r, i) => {
+    const id = String(r.id).trim(), value = String(r.value);
+    if (!id && !value) return;
+    const k = 'x' + i;
+    if (!/^\d{1,3}$/.test(id) || +id > 255) { fieldErr[k] = 'номер поля — целое 0–255'; return; }
+    if (fields.has(+id)) { fieldErr[k] = `поле ${id} уже задаётся формой`; return; }
+    if (r.hex && !hexToBytes(value)) { fieldErr[k] = 'HEX: чётное число символов 0–9, A–F'; return; }
+    put(id, r.hex ? value.replace(/\s+/g, '').toUpperCase() : value, !!r.hex);
+  });
+
+  const params = { timeout: 180, session: '', ipaddr: '', ncom: '', baud: '' };
+  const to = $('#p_timeout').value.trim();
+  if (to && (!/^\d+$/.test(to))) errors.push('Таймаут — целое число секунд, 0 — без ограничения'); else params.timeout = to === '' ? 180 : +to;
+  params.session = $('#p_session').value.trim() || state.nextSession;
+  const route = $('#p_route').value;
+  if (route === 'ip') {
+    const ip = $('#p_ipaddr').value.trim();
+    if (!validIp(ip)) errors.push('Адрес терминала — строго A.B.C.D:порт. Иначе DC молча отправит запрос на терминал из connector.xml.');
+    else params.ipaddr = ip;
+  } else if (route === 'com') {
+    const nc = $('#p_ncom').value.trim(), bd = $('#p_baud').value.trim();
+    if (!nc) errors.push('Укажите порт терминала (ncom)'); else params.ncom = nc;
+    if (bd && !/^\d+$/.test(bd)) errors.push('Скорость — целое число'); else params.baud = bd;
+  }
+
+  for (const [k, m] of Object.entries(fieldErr)) {
+    const spec = specs.find(s => s.key === k);
+    const name = spec ? spec.label : k === 'opcode' ? 'Код операции' : 'Доп. поле ' + (Number(k.slice(1)) + 1);
+    errors.push(`${name}: ${m}`);
+  }
+  const list = [...fields.values()].sort((a, b) => a.id - b.id);
+  return { op, code, fields: list, errors, fieldErr, params, cur, discover };
+}
+
+// ================================================================ сборка тела
+const xmlEsc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function buildBody(c, fmt = state.fmt) {
+  const p = c.params;
+  if (fmt === 'json') {
+    const o = { fields: c.fields.map(f => ({ id: f.id, hex: !!f.hex, value: f.value })) };
+    if (p.ipaddr) o.ipaddr = p.ipaddr;
+    if (p.ncom) { o.ncom = p.ncom; if (p.baud) o.baudrate = p.baud; }
+    o.timeout = String(p.timeout);
+    o.sessionID = p.session;
+    return JSON.stringify(o, null, 2);
+  }
+  const L = ['<?xml version="1.0" encoding="windows-1251"?>', '<request>'];
+  for (const f of c.fields) L.push(`    <field id="${f.id}"${f.hex ? ' hex="true"' : ''}>${xmlEsc(f.value)}</field>`);
+  if (p.ipaddr) L.push(`    <ipaddr>${xmlEsc(p.ipaddr)}</ipaddr>`);
+  if (p.ncom) { L.push(`    <ncom>${xmlEsc(p.ncom)}</ncom>`); if (p.baud) L.push(`    <baudrate>${p.baud}</baudrate>`); }
+  L.push(`    <timeout>${p.timeout}</timeout>`, `    <sessionID>${xmlEsc(p.session)}</sessionID>`, '</request>');
+  return L.join('\n');
+}
+const headersFor = fmt => fmt === 'json'
+  ? { 'Content-Type': 'application/json; charset=windows-1251', 'Accept': 'application/json' }
+  : { 'Content-Type': 'text/xml; charset=windows-1251', 'Accept': 'text/xml' };
+function curlFor(body, fmt) {
+  const hd = headersFor(fmt), q = s => "'" + s.replace(/'/g, "'\\''") + "'";
+  return `printf '%s' ${q(body)} \\\n  | iconv -f UTF-8 -t CP1251 \\\n  | curl -sS -X POST ${q(baseUrl() + '/')} \\\n      -H ${q('Content-Type: ' + hd['Content-Type'])} \\\n      -H ${q('Accept: ' + hd['Accept'])} \\\n      --data-binary @- \\\n  | iconv -f CP1251 -t UTF-8`;
+}
+
+// ================================================================ форма
+function renderNav() {
+  const box = $('#opsList'); box.textContent = '';
+  const groups = [...new Set(OPS.map(o => o.group))];
+  for (const g of groups) {
+    box.append(h('div', { class: 'group' }, h('h4', { text: g }),
+      OPS.filter(o => o.group === g).map(o => h('button', {
+        type: 'button', class: 'op', 'aria-current': o === state.op ? 'true' : 'false',
+        onclick: () => { state.op = o; state.touched.clear(); renderOp(); },
+      }, h('span', { text: o.title }), h('small', { text: o.code != null ? String(o.code) : '…' })))));
+  }
+}
+
+function fieldBox(op, spec) {
+  const id = 'f_' + op.key + '_' + spec.key;
+  const showErr = () => state.touched.has(spec.key);
+  const label = h('label', { for: id }, spec.label, spec.required ? h('span', { class: 'req', title: 'обязательное', text: '*' }) : null,
+    spec.id != null ? h('span', { class: 'id', text: 'поле ' + spec.id }) : null);
+  const box = h('div', { class: 'f', 'data-key': spec.key }, label);
+  const onInput = e => { setVal(op, spec, e.target.value); refresh(); };
+  const onBlur = () => { state.touched.add(spec.key); refresh(); };
+  let control;
+
+  if (spec.kind === 'money') {
+    const cur = String(val(op, (op.req || []).find(s => s.kind === 'currency') || {}) || '643');
+    control = h('div', { class: 'money' },
+      h('input', { type: 'text', id, inputmode: 'decimal', placeholder: '0.00', value: val(op, spec), oninput: onInput, onblur: onBlur }),
+      h('span', { text: curSign(cur) }));
+    box.append(control, h('span', { class: 'hint', 'data-role': 'hint' }));
+  } else if (spec.kind === 'currency') {
+    const v = String(val(op, spec));
+    const known = CURRENCIES.some(c => c[0] === v);
+    const sel = h('select', { id }, CURRENCIES.map(c => h('option', { value: c[0], selected: c[0] === v }, `${c[0]} · ${c[1]}`)),
+      h('option', { value: '__other', selected: !known }, 'Другой код…'));
+    const other = h('input', { type: 'text', inputmode: 'numeric', maxlength: '3', placeholder: 'код ISO 4217', value: known ? '' : v, hidden: known, class: 'mono', oninput: onInput, onblur: onBlur });
+    sel.addEventListener('change', () => {
+      if (sel.value === '__other') { other.hidden = false; other.focus(); setVal(op, spec, other.value); }
+      else { other.hidden = true; setVal(op, spec, sel.value); }
+      renderOp();
+    });
+    box.append(sel, other);
+  } else if (spec.kind === 'select') {
+    const v = String(val(op, spec));
+    control = h('select', { id, onchange: onInput }, spec.options.map(([ov, ol]) => h('option', { value: ov, selected: ov === v }, ol)));
+    box.append(control);
+  } else if (spec.kind === 'genid') {
+    const inp = h('input', { type: 'text', id, value: val(op, spec), class: 'mono', spellcheck: 'false', oninput: onInput, onblur: onBlur, style: 'flex:1;min-width:0' });
+    box.append(h('div', { style: 'display:flex;gap:6px' }, inp,
+      h('button', { type: 'button', class: 'btn small', title: 'Сгенерировать новый', onclick: () => { inp.value = randomDigits(spec.len || 7); setVal(op, spec, inp.value); refresh(); } }, 'Новый')));
+  } else if (spec.kind === 'qrtlv') {
+    box.classList.add('wide');
+    box.append(h('textarea', { id, rows: '2', spellcheck: 'false', oninput: onInput, onblur: onBlur, style: 'resize:vertical;width:100%' }, String(val(op, spec))),
+      h('span', { class: 'hint', 'data-role': 'tlv' }));
+  } else if (spec.kind === 'check') {
+    box.classList.add('wide');
+    label.remove();
+    box.append(h('label', { class: 'radios', style: 'flex-direction:row;gap:8px;cursor:pointer' },
+      h('input', { type: 'checkbox', id, checked: String(val(op, spec)) === '1', onchange: e => { setVal(op, spec, e.target.checked ? '1' : ''); refresh(); } }),
+      h('span', { style: 'font-weight:600' }, spec.label)));
+  } else if (spec.kind === 'radio') {
+    const v = String(val(op, spec));
+    box.classList.add('wide');
+    box.append(h('div', { class: 'radios', role: 'radiogroup' }, spec.options.map(o => h('label', {},
+      h('input', { type: 'radio', name: id, value: o.v, checked: o.v === v, onchange: onInput }),
+      h('span', {}, o.label, h('small', { text: o.sub }))))));
+  } else {
+    control = h('input', { type: 'text', id, value: val(op, spec), placeholder: spec.placeholder || '', class: spec.mono || spec.kind === 'opcode' ? 'mono' : null,
+      inputmode: spec.kind === 'opcode' ? 'numeric' : null, spellcheck: 'false', oninput: onInput, onblur: onBlur });
+    box.append(control);
+    if (spec.kind === 'opcode') box.append(h('span', { class: 'hint', 'data-role': 'opname' }));
+  }
+  if (spec.hint && spec.kind !== 'money') box.append(h('span', { class: 'hint', text: spec.hint }));
+  box.append(h('span', { class: 'err-msg', 'data-role': 'err', hidden: !showErr() }));
+  return box;
+}
+
+function renderExtras(op) {
+  const box = $('#extraRows'); box.textContent = '';
+  const rows = extraRows(op);
+  if (!rows.length) box.append(h('div', { class: 'empty', text: 'Нет дополнительных полей' }));
+  rows.forEach((r, i) => {
+    const name = h('span', { class: 'hint name' });
+    const updName = () => { const n = FIELD_NAMES[+r.id]; name.textContent = r.id === '' ? '' : (n ? `${r.id} — ${n}` : `${r.id} — поле без описания`); };
+    updName();
+    box.append(h('div', { class: 'xrow', 'data-key': 'x' + i },
+      h('input', { type: 'text', class: 'id', inputmode: 'numeric', placeholder: '№', list: 'fieldNames', value: r.id, 'aria-label': 'Номер поля',
+        oninput: e => { r.id = e.target.value.replace(/\D.*$/, ''); if (r.id !== e.target.value) e.target.value = r.id; updName(); state.touched.add('x' + i); refresh(); } }),
+      h('input', { type: 'text', class: 'mono', placeholder: 'значение', value: r.value, spellcheck: 'false', 'aria-label': 'Значение поля',
+        oninput: e => { r.value = e.target.value; refresh(); }, onblur: () => { state.touched.add('x' + i); refresh(); } }),
+      h('label', { class: 'hexchk', title: 'Значение — HEX-строка, DC превратит её в байты' },
+        h('input', { type: 'checkbox', checked: !!r.hex, onchange: e => { r.hex = e.target.checked; refresh(); } }), 'HEX'),
+      h('button', { type: 'button', class: 'btn small', title: 'Удалить поле', 'aria-label': 'Удалить поле',
+        onclick: () => { rows.splice(i, 1); renderExtras(op); refresh(); } }, '✕'),
+      name, h('span', { class: 'err-msg', 'data-role': 'err', hidden: true })));
+  });
+}
+
+function renderOp() {
+  const op = state.op;
+  renderNav();
+  $('#opTitle').textContent = op.title;
+  $('#opCode').textContent = (op.code != null ? `операция ${op.code}` : 'операция — любая') + (op.verified ? ' · проверено на терминале' : '');
+  $('#opDesc').textContent = op.desc;
+  const rf = $('#reqFields'); rf.textContent = '';
+  (op.req || []).forEach(s => rf.append(fieldBox(op, s)));
+  if (!(op.req || []).length) rf.append(h('div', { class: 'empty', text: 'Кроме TerminalID из шапки полей не требуется.' }));
+  const of = $('#optFields'); of.textContent = '';
+  (op.opt || []).forEach(s => of.append(fieldBox(op, s)));
+  $('#optSection').hidden = !(op.opt || []).length;
+  if (op.openOpt) $('#optSection').open = true;
+  if (op.openExtra) $('#extraSection').open = true;
+  const note = $('#opNote'); note.textContent = '';
+  if (op.note || op.fill) {
+    const n = h('div', { class: 'note' });
+    if (op.note) n.append(op.note);
+    if (op.fill) {
+      const s = state.lastSale;
+      n.append(h('div', { style: 'margin-top:8px' },
+        h('button', { type: 'button', class: 'btn small', disabled: !s, onclick: () => fillFromSale(op) },
+          s ? `Подставить из оплаты ${fmtMoney(s.amount, s.cur)} · RRN ${s.rrn || '—'}` : 'Подставить из последней оплаты — оплат ещё не было')));
+    }
+    note.append(n);
+  }
+  renderExtras(op);
+  refresh();
+}
+
+function fillFromSale(op) {
+  const s = state.lastSale; if (!s) return;
+  const v = (state.values[op.key] ||= {});
+  const k = s.amount.padStart(3, '0');
+  v.amount = `${k.slice(0, -2)}.${k.slice(-2)}`;
+  v.currency = s.cur || '643';
+  if (s.rrn) v.rrn = s.rrn;
+  if (s.auth) v.auth = s.auth;
+  if (op.key === 'reversal') { if (s.stan) v.stan = s.stan; v.orig = '1'; }
+  $('#optSection').open = true;
+  renderOp();
+  toast('Поля заполнены из последней одобренной оплаты');
+}
+
+// ================================================================ предпросмотр и ошибки
+function refresh() {
+  const c = collect();
+  const op = state.op;
+  // ошибки у полей — только у тронутых
+  $$('#formCard [data-key]').forEach(box => {
+    const k = box.dataset.key, m = c.fieldErr[k], err = box.querySelector('[data-role=err]');
+    const show = !!m && state.touched.has(k);
+    if (err) { err.textContent = m || ''; err.hidden = !show; }
+    box.querySelectorAll('input:not([type=radio]):not([type=checkbox]), select').forEach(i => i.classList.toggle('invalid', show));
+  });
+  const money = (op.req || []).find(s => s.kind === 'money');
+  if (money) {
+    const hint = $(`#formCard [data-key="${money.key}"] [data-role=hint]`);
+    const r = parseMoney(val(op, money));
+    if (hint) hint.textContent = r.kop ? `В запрос уйдёт ${r.kop} — сумма в копейках (поле 0)` : money.hint;
+  }
+  const qr = (op.req || []).find(s => s.kind === 'qrtlv');
+  if (qr) {
+    const t = $(`#formCard [data-key="${qr.key}"] [data-role=tlv]`), q = qrTlv(String(val(op, qr)));
+    if (t) t.textContent = `${q.bytes} байт текста → поле 86, hex="true": ${q.hex.length > 64 ? q.hex.slice(0, 64) + '…' : q.hex}`;
+  }
+  const on = $('#formCard [data-role=opname]');
+  if (on) on.textContent = c.code != null && OP_NAMES[c.code] ? `${c.code} — ${OP_NAMES[c.code]}` : '';
+  $('#errors').textContent = '';
+  $('#errors').dataset.all = JSON.stringify(c.errors);
+
+  const body = buildBody(c);
+  const bad = badChars(body);
+  const hd = headersFor(state.fmt);
+  $('#previewHint').textContent = `POST ${baseUrl()}/ · ${hd['Content-Type']} · Accept: ${hd['Accept']}` +
+    (bad.length ? ` · ⚠ символы ${bad.join(' ')} не существуют в windows-1251 и уйдут как «?»` : '') +
+    (c.errors.length ? ' · в форме есть ошибки' : '');
+  $('#preview').textContent = state.ptab === 'curl' ? curlFor(body, state.fmt) : body;
+  $('#preview').classList.toggle('wrap', state.ptab === 'curl');
+  return c;
+}
+function showErrors(list) {
+  const ul = $('#errors'); ul.textContent = '';
+  list.forEach(e => ul.append(h('li', { text: e })));
+}
+
+// ================================================================ ответ DC
+function parseResponse(text, httpStatus) {
+  const t = text.replace(/^﻿/, '').trim();
+  if (!t) return { kind: 'empty' };
+  if (t.startsWith('{')) {
+    let o; try { o = JSON.parse(t); } catch (e) { return { kind: 'bad', why: 'JSON не разобрался: ' + e.message }; }
+    if (o && 'errorcode' in o) return { kind: 'error', code: String(o.errorcode), desc: o.errordescription == null ? '' : String(o.errordescription) };
+    return { kind: 'fields', fields: (o.fields || []).map(f => ({ id: Number(f.id), hex: f.hex === true || f.hex === 'true', value: f.value == null ? '' : String(f.value) })) };
+  }
+  if (t.startsWith('<?xml') || t.startsWith('<response')) {
+    const doc = new DOMParser().parseFromString(t, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) return { kind: 'bad', why: 'XML не разобрался' };
+    const root = doc.documentElement;
+    const ec = root.getElementsByTagName('errorcode')[0];
+    if (ec) { const ed = root.getElementsByTagName('errordescription')[0]; return { kind: 'error', code: ec.textContent.trim(), desc: ed ? ed.textContent : '' }; }
+    return { kind: 'fields', fields: [...root.getElementsByTagName('field')].map(n => ({ id: Number(n.getAttribute('id')), hex: n.getAttribute('hex') === 'true', value: n.textContent })) };
+  }
+  // HTML-ответ: так DC отвечает, если Accept не text/xml и не application/json
+  const plain = t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return { kind: 'html', httpStatus, desc: plain };
+}
+function fieldText(f) {
+  if (!f) return '';
+  if (!f.hex) return f.value;
+  const b = hexToBytes(f.value); return b ? decodeBytes(b, 'windows-1251') : f.value;
+}
+// Образ чека: блоки «0xNN^^текст~», строки разделены CR (в XML — &#13;).
+function splitSlips(text) {
+  const out = [];
+  for (const raw of text.replace(/\r\n?/g, '\n').split('~')) {
+    if (!raw.trim()) continue;
+    const m = /^\s*(0[xX][0-9A-Fa-f]+)\^\^\n?/.exec(raw);
+    out.push({ tag: m ? m[1].toUpperCase().replace('0X', '0x') : '', text: (m ? raw.slice(m[0].length) : raw).replace(/\n+$/, '') });
+  }
+  return out;
+}
+
+async function send({ discover = false, pollStart = 0 } = {}) {
+  if (state.sending) return;
+  if (!pollStart) { state.pollStop = false; clearTimeout(state.pollTimer); }
+  const c = collect({ discover });
+  state.touched = new Set([...state.touched, ...Object.keys(c.fieldErr)]);
+  refresh();
+  if (c.errors.length) { showErrors(c.errors); return; }
+  showErrors([]);
+  const fmt = discover ? 'xml' : state.fmt;
+  const body = buildBody(c, fmt);
+  const entry = { at: new Date(), op: c.op, discover, code: c.code, fields: c.fields, fmt, body, cur: c.cur, url: baseUrl() };
+  setSending(true, entry);
+  const t0 = performance.now();
+  try {
+    const resp = await fetch(entry.url + '/', { method: 'POST', headers: headersFor(fmt), body: encode1251(body), cache: 'no-store' });
+    const buf = await resp.arrayBuffer();
+    const cs = (/charset=([^;]+)/i.exec(resp.headers.get('content-type') || '') || [])[1];
+    entry.http = resp.status;
+    entry.raw = decodeBytes(buf, cs ? cs.trim() : 'windows-1251');
+    entry.res = parseResponse(entry.raw, resp.status);
+  } catch (e) {
+    entry.res = { kind: 'network', why: String(e && e.message || e) };
+  }
+  entry.ms = performance.now() - t0;
+  setSending(false);
+  $('#p_session').value = '';
+  state.nextSession = newSession();
+
+  const byId = entry.res.kind === 'fields' ? Object.fromEntries(entry.res.fields.map(f => [f.id, f])) : {};
+  entry.byId = byId;
+  if (discover && byId[27]) {
+    $('#tid').value = byId[27].value.trim(); store.set('tid', $('#tid').value);
+    toast(`TerminalID ${$('#tid').value} получен от терминала и сохранён`);
+  }
+  if (entry.res.kind === 'fields' && !discover)   // новый идентификатор кассы на следующую операцию
+    for (const spec of [...(c.op.req || []), ...(c.op.opt || [])]) if (spec.kind === 'genid') setVal(c.op, spec, randomDigits(spec.len || 7));
+  if (entry.res.kind === 'fields' && c.op.key === 'sale' && (byId[39] || {}).value === '1') {
+    state.lastSale = { amount: (byId[0] || {}).value || (c.fields.find(f => f.id === 0) || {}).value || '', cur: (byId[4] || {}).value || c.cur,
+      rrn: (byId[14] || {}).value || '', auth: (byId[13] || {}).value || '', stan: (byId[26] || {}).value || '' };
+  }
+  state.history.unshift(entry); state.history.length = Math.min(state.history.length, 60);
+  renderHistory(); showEntry(entry); renderOp();
+  revealResp();
+  checkStatus();
+
+  // Статус СБП: повторяем, пока терминал отвечает R01 «в обработке»
+  const started = pollStart || entry.at.getTime();
+  if (!discover && c.op.poll && String(val(c.op, { key: 'repeat', def: '1' })) === '1' && sbpCode(entry) === 'R01' && !state.pollStop) {
+    if (Date.now() - started < 180000) {
+      toast('Операция в обработке — повторный запрос через 2 с', 1800);
+      state.pollTimer = setTimeout(() => { if (!state.pollStop && state.op === c.op) send({ pollStart: started }); }, 2000);
+    } else toast('Статус так и не изменился за 3 минуты — опрос остановлен', 4000);
+  }
+}
+
+let sendTimer;
+function setSending(on, entry) {
+  state.sending = on;
+  const b = $('#sendBtn');
+  b.disabled = on; $('#tidDiscover').disabled = on;
+  b.textContent = '';
+  if (on) {
+    b.append(h('span', { class: 'spin' }), 'Выполняется…');
+    const started = Date.now();
+    const body = $('#respBody'); body.textContent = '';
+    const secs = h('b', { text: '0 с' });
+    body.append(h('div', { class: 'waiting' }, h('span', { class: 'spin' }), h('div', {},
+      h('div', {}, `${entry.discover ? 'Узнаём TerminalID' : entry.op.title}: ждём ответ терминала… `, secs),
+      h('div', { class: 'hint', text: 'DC отвечает, когда операция закончится: покупатель прикладывает карту, вводит PIN, терминал связывается с банком. Это может занять минуты.' }))));
+    $('#respMeta').textContent = '';
+    clearInterval(sendTimer);
+    sendTimer = setInterval(() => { secs.textContent = Math.round((Date.now() - started) / 1000) + ' с'; }, 500);
+    setTimeout(() => { if (state.sending) checkStatus(); }, 1200);
+    revealResp();
+  } else {
+    clearInterval(sendTimer);
+    b.textContent = 'Отправить';
+  }
+}
+
+// На узком экране ответ ниже формы — показываем его, если он вне экрана.
+function revealResp() {
+  const card = $('#respCard'), top = card.getBoundingClientRect().top;
+  if (top > window.innerHeight - 160 || top < 0) card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+function sbpCode(entry) {
+  if (!entry.op || !entry.op.sbp || !entry.byId) return null;
+  const c = String((entry.byId[15] || {}).value || '').trim().toUpperCase();
+  return SBP_CODES[c] ? c : null;
+}
+const sentField = (entry, id) => (entry.fields.find(f => f.id === id) || {}).value || '';
+const kopToRub = k => { const s = String(k || '0').padStart(3, '0'); return `${s.slice(0, -2)}.${s.slice(-2)}`; };
+function goFill(key, values) {
+  const op = OPS.find(o => o.key === key); if (!op) return;
+  state.op = op; state.touched.clear();
+  state.values[key] = Object.assign(state.values[key] || {}, values);
+  renderOp();
+  $('#formCard').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  toast(`«${op.title}»: поля заполнены из ответа`);
+}
+
+function verdict(entry) {
+  const r = entry.res;
+  if (r.kind === 'network') return { cls: 'err', big: 'Нет связи с DC', short: 'нет связи' };
+  if (r.kind === 'error') { const e = DC_ERRORS[r.code]; return { cls: 'err', big: `Ошибка DC ${r.code}` + (e ? ` — ${e[0]}` : ''), short: 'ошибка ' + r.code }; }
+  if (r.kind === 'html') return { cls: 'err', big: `HTTP ${r.httpStatus}`, short: 'HTTP ' + r.httpStatus };
+  if (r.kind !== 'fields') return { cls: 'warn', big: 'Ответ не разобран', short: 'не разобран' };
+  const scr = entry.code === 41 && SCREEN_RESULT[(entry.byId[67] || {}).value];
+  if (scr) return { cls: scr[1], big: scr[0], short: scr[0].toLowerCase() };
+  const c15 = sbpCode(entry);
+  if (c15) {
+    let big = SBP_CODES[c15][0];
+    if (c15 === 'R12') { const st = (entry.byId[39] || {}).value; big = st === '0' ? 'Не получен ответ на запрос статуса' : st === '16' ? 'Не получен ответ на запрос QR-кода' : big; }
+    return { cls: SBP_CODES[c15][1], big: `${c15} · ${big}`, short: `${c15} ${big.toLowerCase()}`, sbp: c15 };
+  }
+  const st = (entry.byId[39] || {}).value;
+  if (st == null) return { cls: 'info', big: 'Ответ без статуса (поля 39 нет)', short: 'без статуса' };
+  const s = STATUS[st] || [`Статус ${st}`, 'warn'];
+  return { cls: s[1], big: s[0], short: s[0].toLowerCase() };
+}
+
+function showEntry(entry) {
+  state.shown = entry;
+  const box = $('#respBody'); box.textContent = '';
+  const v = verdict(entry), r = entry.res, byId = entry.byId || {};
+  $('#respMeta').textContent = `${hhmmss(entry.at)} · ${(entry.ms / 1000).toFixed(1)} с` + (entry.http ? ` · HTTP ${entry.http}` : '');
+
+  const sub = [];
+  let hint = '';
+  if (r.kind === 'network') {
+    sub.push(`Запрос на ${entry.url}/ не прошёл: ${r.why}.`);
+    hint = 'Проверьте, что служба запущена (dcctl status) и адрес в шапке верный. Если DC работает, а браузер всё равно не отправляет запрос из файла, откройте страницу через локальный сервер — подсказка внизу страницы.';
+  } else if (r.kind === 'error') {
+    if (r.desc && r.desc !== 'null') sub.push(`Описание от DC: ${r.desc}`);
+    hint = (DC_ERRORS[r.code] || [])[1] || '';
+  } else if (r.kind === 'html') {
+    sub.push(r.desc);
+  } else if (r.kind === 'fields') {
+    const txt = fieldText(byId[19]).trim();
+    if (txt) sub.push(txt);
+    const st = (byId[39] || {}).value;
+    if (v.sbp) {
+      if (st != null) sub.push(`Статус транзакции (поле 39): ${(STATUS[st] || [st])[0]}`);
+      hint = SBP_CODES[v.sbp][2];
+    }
+    if (st === '17') hint = 'По документации вендора успешен только статус 1. Как трактовать «одобрено офлайн», уточните у банка.';
+    if (st === '0' && entry.code === 26) hint = 'Тест связи без TerminalID (поле 27) возвращает статус 0, хотя связь есть. Сам TerminalID — в ответе.';
+  } else if (r.kind === 'bad') sub.push(r.why);
+  const banner = h('div', { class: 'banner ' + v.cls }, h('div', {},
+    h('div', { class: 'big', text: (entry.discover ? 'TerminalID: ' : '') + v.big }),
+    sub.map(s => h('div', { class: 'sub', text: s })),
+    hint ? h('div', { class: 'extra-hint', text: hint }) : null),
+    h('div', { class: 'meta' }, entry.discover ? 'Тест связи' : entry.op.title));
+  box.append(banner);
+
+  if (r.kind === 'fields') {
+    const cur = (byId[4] || {}).value || entry.cur;
+    const sbp = !!entry.op.sbp;
+    const facts = [
+      [0, 'Сумма', f => fmtMoney(f.value, cur)], [14, sbp ? 'Идентификатор, поле 14' : 'RRN', null, true],
+      [13, sbp ? 'Идентификатор, поле 13' : 'Код авторизации', null, true],
+      [10, 'Карта', null, true], [15, 'Код ответа хоста', null, true], [27, 'Терминал', null, true],
+      [28, 'Торговец', null, true], [6, 'Время на хосте', f => fmtStamp(f.value)], [21, 'Время на терминале', f => fmtStamp(f.value)],
+      [26, 'Номер транзакции', null, true], [63, 'Серийный номер', null, true], [67, 'Результат команды', null, true],
+    ].filter(([id]) => byId[id] && String(byId[id].value).trim() !== '');
+    if (facts.length) box.append(h('div', { class: 'facts' }, facts.map(([id, k, fmt, mono]) => h('div', { class: 'fact' },
+      h('div', { class: 'k', text: k }), h('div', { class: 'v' + (mono ? ' mono' : ''), text: fmt ? fmt(byId[id]) : byId[id].value })))));
+
+    const acts = [];
+    const key = entry.op.key, c15 = v.sbp;
+    const money = { amount: kopToRub(sentField(entry, 0)), currency: sentField(entry, 4) || '643' };
+    if (key === 'sbpSale' || key === 'sbpQr')
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => goFill('sbpStatus', { ...money, sbpRef: sentField(entry, 14) }) }, 'Статус этой оплаты'));
+    const payId = key === 'sbpStatus' ? ((byId[13] || {}).value || (byId[14] || {}).value) : (key === 'sbpSale' || key === 'sbpQr') ? (byId[14] || {}).value : '';
+    if (payId && c15 === 'R00')
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => goFill('sbpRefund', { ...money, sbpPay: payId, refundId: randomDigits(32) }) }, 'Возврат этой оплаты'));
+    if (key === 'sbpRefund')
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => goFill('sbpRefundStatus', { ...money, refundRef: (byId[13] || {}).value || sentField(entry, 14) }) }, 'Статус этого возврата'));
+    if ((key === 'sbpStatus' || key === 'sbpRefundStatus') && c15 === 'R01')
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => { state.op = entry.op; renderOp(); send(); } }, 'Запросить ещё раз'));
+    if (key === 'sale' && (byId[39] || {}).value === '1') {
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => { state.op = OPS.find(o => o.key === 'void'); fillFromSale(state.op); } }, 'Отменить эту оплату'));
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => { state.op = OPS.find(o => o.key === 'refund'); fillFromSale(state.op); } }, 'Оформить возврат'));
+      acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => { state.op = OPS.find(o => o.key === 'reversal'); fillFromSale(state.op); } }, 'Реверсал'));
+    }
+    if (byId[14]) acts.push(h('button', { type: 'button', class: 'btn small', onclick: () => copyText(byId[14].value) }, sbp ? 'Копировать поле 14' : 'Копировать RRN'));
+    if (acts.length) box.append(h('div', { class: 'resp-actions' }, acts));
+
+    const links = [];
+    for (const f of r.fields) for (const m of fieldText(f).matchAll(/https?:\/\/[^\s"'<>~^]+/g)) links.push({ id: f.id, url: m[0] });
+    if (links.length) box.append(h('div', { class: 'block' }, h('h3', { text: entry.op.sbp ? 'Ссылка для QR-кода' : 'Ссылки в ответе' }),
+      links.map(l => h('div', { class: 'fact', style: 'margin-bottom:10px' },
+        h('div', { class: 'k', text: `поле ${l.id} · ${FIELD_NAMES[l.id] || ''}` }),
+        h('div', { class: 'v mono', text: l.url }),
+        h('div', { class: 'resp-actions', style: 'margin-top:6px' },
+          h('button', { type: 'button', class: 'btn small', onclick: () => copyText(l.url) }, 'Копировать'),
+          h('button', { type: 'button', class: 'btn small', onclick: () => goFill('screenQr', { qrText: l.url }) }, 'Показать QR-кодом на терминале'))))));
+
+    if (byId[90]) {
+      const slips = splitSlips(fieldText(byId[90]));
+      if (slips.length) box.append(h('div', { class: 'block' }, h('h3', { text: 'Образ чека · поле 90' }),
+        h('div', { class: 'slips' }, slips.map((s, i) => h('div', { class: 'slip' },
+          h('div', { class: 'cap' }, h('span', { text: `Экземпляр ${i + 1}` + (s.tag ? ` · ${s.tag}` : '') }),
+            h('span', {}, h('button', { type: 'button', class: 'btn link', onclick: () => copyText(s.text) }, 'копировать'), ' · ',
+              h('button', { type: 'button', class: 'btn link', onclick: () => printText(s.text) }, 'печать'))),
+          h('pre', { text: s.text }))))));
+    }
+
+    const rows = r.fields.slice().sort((a, b) => a.id - b.id).map(f => {
+      let note = '';
+      if (f.id === 0) note = fmtMoney(f.value, cur);
+      if (f.id === 4) note = (CURRENCIES.find(c => c[0] === f.value) || [])[1] || '';
+      if (f.id === 25) note = OP_NAMES[+f.value] || '';
+      if (f.id === 39) note = (STATUS[f.value] || [])[0] || '';
+      if (f.id === 6 || f.id === 21) note = fmtStamp(f.value);
+      if (f.id === 15 && SBP_CODES[f.value]) note = 'СБП: ' + SBP_CODES[f.value][0];
+      if (f.id === 67 && entry.code === 41 && SCREEN_RESULT[f.value]) note = SCREEN_RESULT[f.value][0];
+      let shown = f.value;
+      if (f.id === 90) shown = f.value.length > 120 ? f.value.slice(0, 120).replace(/\r/g, '⏎') + '… (образ чека выше)' : f.value.replace(/\r/g, '⏎');
+      return h('tr', {}, h('td', { class: 'num', text: f.id }),
+        h('td', { class: 'nm' }, FIELD_NAMES[f.id] || 'поле ' + f.id, f.hex ? h('span', { class: 'tag', text: 'hex' }) : null, note ? h('small', { text: note }) : null),
+        h('td', { class: 'val', text: shown }));
+    });
+    box.append(h('div', { class: 'block' }, h('h3', { text: `Все поля ответа · ${r.fields.length}` }),
+      h('table', { class: 'ftab' }, h('thead', {}, h('tr', {}, h('th', { text: '№' }), h('th', { text: 'Поле' }), h('th', { text: 'Значение' }))), h('tbody', {}, rows))));
+  }
+
+  // сырой обмен
+  const rawPre = h('pre', { class: 'code wrap' });
+  const tabs = h('div', { class: 'tabs', role: 'tablist' });
+  const setRaw = which => {
+    rawPre.textContent = which === 'req' ? entry.body : (entry.raw ?? '(ответа нет)');
+    $$('button', tabs).forEach(b => b.setAttribute('aria-selected', String(b.dataset.t === which)));
+  };
+  tabs.append(h('button', { type: 'button', role: 'tab', 'data-t': 'resp', onclick: () => setRaw('resp') }, 'Ответ'),
+    h('button', { type: 'button', role: 'tab', 'data-t': 'req', onclick: () => setRaw('req') }, 'Запрос'));
+  box.append(h('div', { class: 'block' }, h('div', { class: 'card-head' }, h('h3', { text: 'Обмен как есть', style: 'margin:0' }), tabs), rawPre,
+    h('div', { class: 'code-actions' }, h('button', { type: 'button', class: 'btn small', onclick: () => copyText(rawPre.textContent) }, 'Копировать'))));
+  setRaw('resp');
+  $$('#history .hist').forEach(b => b.setAttribute('aria-current', String(b._entry === entry)));
+}
+
+function renderHistory() {
+  const box = $('#history'); box.textContent = '';
+  if (!state.history.length) { box.append(h('div', { class: 'empty', text: 'Пока пусто' })); return; }
+  for (const e of state.history) {
+    const v = verdict(e);
+    const amount = (e.fields.find(f => f.id === 0) || {}).value;
+    const title = (e.discover ? 'Узнать TerminalID' : e.op.title) + (amount ? ' · ' + fmtMoney(amount, e.cur) : '');
+    const b = h('button', { type: 'button', class: 'hist ' + (v.cls === 'info' ? '' : v.cls), title: v.big, onclick: () => { showEntry(e); revealResp(); } },
+      h('span', { class: 'dot' }), h('span', {}, h('div', { text: title }), h('div', { class: 't', text: `${hhmmss(e.at)} · ${v.short}` })));
+    b._entry = e;
+    box.append(b);
+  }
+}
+
+// ================================================================ состояние DC и прерывание
+async function checkStatus() {
+  const pill = $('#statusPill'), txt = $('#statusText');
+  pill.className = 'pill'; txt.textContent = 'проверяю…';
+  try {
+    const r = await fetch(baseUrl() + '/', { method: 'GET', cache: 'no-store' });
+    if (r.status === 404) { pill.classList.add('free'); txt.textContent = 'свободен'; }
+    else if (r.status === 200) { pill.classList.add('busy'); txt.textContent = 'идёт обмен'; }
+    else { txt.textContent = 'HTTP ' + r.status; }
+  } catch { pill.classList.add('offline'); txt.textContent = 'нет связи'; }
+}
+async function abortOp() {
+  const polling = !!state.pollTimer;
+  if (state.pollTimer) { clearTimeout(state.pollTimer); state.pollTimer = null; }
+  state.pollStop = true;
+  if (polling && !state.sending) { toast('Опрос статуса остановлен'); return; }
+  const tid = $('#tid').value.trim();
+  if (!tid) { toast('Нужен TerminalID — команда прерывания адресуется терминалу'); $('#tid').focus(); return; }
+  try {
+    // DC отвечает на эту команду без заголовков CORS, поэтому ответ не читаем (no-cors):
+    // браузер всё равно доставит запрос.
+    await fetch(`${baseUrl()}/command/closeOpenConnection?TerminalId=${encodeURIComponent(tid)}`, { method: 'POST', mode: 'no-cors', cache: 'no-store' });
+    toast('Команда прерывания отправлена. Если операция шла, DC вернёт на неё ошибку 15.', 4000);
+  } catch { toast('Не удалось связаться с DC'); }
+  setTimeout(checkStatus, 800);
+}
+
+// ================================================================ запуск
+function init() {
+  $('#dcUrl').value = store.get('url', 'http://127.0.0.1:9015');
+  $('#tid').value = store.get('tid', '');
+  $('#p_timeout').value = store.get('timeout', 180);
+  $('#fieldNames').append(...Object.entries(FIELD_NAMES).map(([id, n]) => h('option', { value: id }, n)));
+
+  $('#dcUrl').addEventListener('change', () => { $('#dcUrl').value = baseUrl(); store.set('url', baseUrl()); refresh(); checkStatus(); });
+  $('#tid').addEventListener('input', () => { store.set('tid', $('#tid').value.trim()); refresh(); });
+  $('#p_timeout').addEventListener('input', () => { store.set('timeout', $('#p_timeout').value.trim()); refresh(); });
+  ['#p_session', '#p_ipaddr', '#p_ncom', '#p_baud'].forEach(s => $(s).addEventListener('input', refresh));
+  $('#p_route').addEventListener('change', () => {
+    const r = $('#p_route').value;
+    $('#routeIpBox').hidden = r !== 'ip'; $('#routeComBox').hidden = r !== 'com'; $('#routeBaudBox').hidden = r !== 'com';
+    refresh();
+  });
+  $$('.seg [data-fmt]').forEach(b => b.addEventListener('click', () => {
+    state.fmt = b.dataset.fmt; store.set('fmt', state.fmt);
+    $$('.seg [data-fmt]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    refresh();
+  }));
+  $$('.seg [data-fmt]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fmt === state.fmt)));
+  $$('[data-ptab]').forEach(b => b.addEventListener('click', () => {
+    state.ptab = b.dataset.ptab;
+    $$('[data-ptab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+    refresh();
+  }));
+  $('#copyPreview').addEventListener('click', () => copyText($('#preview').textContent));
+  $('#opForm').addEventListener('submit', e => { e.preventDefault(); send(); });
+  $('#opForm').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
+  $('#tidDiscover').addEventListener('click', () => {
+    if (!confirm('Узнать TerminalID тестом связи без поля 27? Терминал один раз покажет «от кассы не получен terminal id» — это нормально.')) return;
+    send({ discover: true });
+  });
+  $('#abortBtn').addEventListener('click', abortOp);
+  $('#statusPill').addEventListener('click', checkStatus);
+  $('#resetBtn').addEventListener('click', () => {
+    state.values[state.op.key] = {}; state.extra[state.op.key] = []; state.touched.clear();
+    $('#p_session').value = ''; showErrors([]); renderOp();
+  });
+  $('#addExtra').addEventListener('click', () => {
+    extraRows(state.op).push({ id: '', value: '', hex: false }); renderExtras(state.op); refresh();
+    const ids = $$('#extraRows input.id'); if (ids.length) ids[ids.length - 1].focus();
+  });
+  renderOp();
+  checkStatus();
+}
+init();
+})();
+</script>
+</body>
+</html>

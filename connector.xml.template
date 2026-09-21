@@ -1,0 +1,74 @@
+<ROOT>
+    <!-- Порт HTTP-сервиса: сюда ходит кассовое ПО -->
+    <SERVERPORT>9015</SERVERPORT>
+
+    <!-- OFF | SYSTEM | ADVANCED | DEBUG | VERBOSE. На отладке ставьте DEBUG -->
+    <LOG_TYPE>ADVANCED</LOG_TYPE>
+    <!-- На macOS путь по умолчанию (/var/log/dualconnector) не используется — задаём явно -->
+    <LOG_PATH>__PREFIX__/service/log</LOG_PATH>
+    <LOG_CLEARTIME>30</LOG_CLEARTIME>
+
+    <TRIPLEACK>ON</TRIPLEACK>
+    <DEVICES_TYPE>TERMINAL</DEVICES_TYPE>
+
+    <!-- ПОДКЛЮЧЕНИЕ ТЕРМИНАЛА. Оставьте РОВНО ОДИН вариант, остальные удалите.
+         Два тега <CONNECTION_TYPE> в файле — и какой победит, не определено.
+         Проверить себя:  dcctl check                                      -->
+
+    <!-- ВАРИАНТ А: USB / COM.
+         Путь именно к cu.*, а не tty.* — tty.* блокируется на открытии до DCD.
+         Список портов:  dcctl ports
+         AUTO_SEARCH держим OFF: он реализован через /sys и udevadm, на маке мёртв. -->
+    <CONNECTION_TYPE>COM</CONNECTION_TYPE>
+    <CONNECTION_PORT>/dev/cu.usbmodemXXXX</CONNECTION_PORT>
+    <CONNECTION_BAUDRATE>115200</CONNECTION_BAUDRATE>
+    <AUTO_SEARCH>OFF</AUTO_SEARCH>
+    <ADVANCED_AUTO_SEARCH>OFF</ADVANCED_AUTO_SEARCH>
+
+    <!-- ВАРИАНТ Б: Ethernet / Wi-Fi. Удалите четыре строки варианта А выше
+         и раскомментируйте две строки ниже. jssc при этом не нужен вовсе.
+
+         ВНИМАНИЕ: адрес валидируется чистым IPv4-регекспом, строго A.B.C.D:порт.
+         Имя хоста (terminal.local) не пройдёт и молча станет null, а операция
+         упадёт с errorcode 13 «Can't open device».
+
+    <CONNECTION_TYPE>IP</CONNECTION_TYPE>
+    <IPADDRESS>192.168.1.100:9000</IPADDRESS>
+                                                                           -->
+
+    <!-- ВАРИАНТ В: PAX по USB в стандартном режиме (ttyPOS), например D230.
+         Такой терминал не создаёт COM-порта: он говорит своим протоколом
+         поверх bulk-эндпоинтов. На Linux его обслуживает модуль ядра ttyPos,
+         под macOS — мост paxbridge (служба ru.inpas.paxbridge, ставится
+         install.sh), который переводит протокол в TCP на 127.0.0.1:27016.
+         DC подключается к мосту как к IP-терминалу; jssc не нужен.
+         Проверка:  dcctl bridge status  /  dcctl bridge probe
+
+    <CONNECTION_TYPE>IP</CONNECTION_TYPE>
+    <IPADDRESS>127.0.0.1:27016</IPADDRESS>
+                                                                           -->
+
+    <!-- Таймауты -->
+    <WAITACK>5</WAITACK>
+    <WAITPACKET>45</WAITPACKET>
+    <CONNECT_TIMEOUT>20</CONNECT_TIMEOUT>
+    <EXCHANGE_TIMEOUT>180</EXCHANGE_TIMEOUT>
+    <RECONNECTION_DELAY>6</RECONNECTION_DELAY>
+
+    <!-- Контроль доставки данных между кассой и терминалом -->
+    <CONTROL_SEND_DATA>OFF</CONTROL_SEND_DATA>
+    <CONTROL_SEND_DATA_TIMEOUT>5</CONTROL_SEND_DATA_TIMEOUT>
+
+    <!-- Автоподтверждение операции на стороне терминала -->
+    <CONFIRM_OPERATION>OFF</CONFIRM_OPERATION>
+
+    <HEX_STRING_FORMAT>ON</HEX_STRING_FORMAT>
+    <!-- Перечитывать этот файл на лету и перезапускать HTTP-сервер -->
+    <CONFIG_WATCHER>ON</CONFIG_WATCHER>
+
+    <!-- Куда DC шлёт диалоги кассиру.
+         127.0.0.1:6000 — штатный DC PosGUI.
+         Свой адрес     — если окна рисует ваше кассовое ПО.
+         Удалите тег    — диалоги для этого терминала отключены. -->
+    <IPADDRESSGUI>127.0.0.1:6000</IPADDRESSGUI>
+</ROOT>

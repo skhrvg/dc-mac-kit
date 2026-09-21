@@ -1,0 +1,9 @@
+# создаётся install.sh / при ручном запуске моста
+.venv/
+vendor/
+__pycache__/
+*.pyc
+
+# локальные артефакты
+.DS_Store
+*.log
