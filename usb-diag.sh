@@ -147,7 +147,8 @@ hdr "Что это значит"
 
 if [ -n "$REAL_CU" ]; then
   cat <<'EOF'
-  Порт есть — терминал в режиме USB-CDC и виден как последовательный порт.
+  Порт есть — терминал виден как последовательный порт: USB-CDC или Bluetooth
+  (у Bluetooth-порта в имени название терминала).
   В connector.xml: CONNECTION_TYPE=COM, CONNECTION_PORT=<порт cu.*>.
 EOF
 elif [ -n "$PAX_LINE" ]; then

@@ -48,6 +48,13 @@
     <IPADDRESS>127.0.0.1:27016</IPADDRESS>
                                                                            -->
 
+    <!-- ВАРИАНТ Г: Bluetooth. Это вариант А с беспроводным портом.
+         На терминале: связь с кассой BLUETOOTH (не PIPE и не TCPIP OVER BLUETOOTH).
+         На маке: Системные настройки, Bluetooth, подключить терминал. После
+         сопряжения появится /dev/cu.ИМЯ-ТЕРМИНАЛА (dcctl ports): впишите его
+         в CONNECTION_PORT варианта А. Режим CONNECTION_TYPE=BT в DC работает
+         только на Android.                                                -->
+
     <!-- Таймауты -->
     <WAITACK>5</WAITACK>
     <WAITPACKET>45</WAITPACKET>
