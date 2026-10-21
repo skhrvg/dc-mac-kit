@@ -48,12 +48,26 @@
     <IPADDRESS>127.0.0.1:27016</IPADDRESS>
                                                                            -->
 
-    <!-- ВАРИАНТ Г: Bluetooth. Это вариант А с беспроводным портом.
+    <!-- ВАРИАНТ Г: Bluetooth через /dev/cu.*. Это вариант А с беспроводным портом.
          На терминале: связь с кассой BLUETOOTH (не PIPE и не TCPIP OVER BLUETOOTH).
          На маке: Системные настройки, Bluetooth, подключить терминал. После
          сопряжения появится /dev/cu.ИМЯ-ТЕРМИНАЛА (dcctl ports): впишите его
          в CONNECTION_PORT варианта А. Режим CONNECTION_TYPE=BT в DC работает
-         только на Android.                                                -->
+         только на Android.
+         На macOS 26 этот порт ломается после ручного «Подключить» и после
+         любого перезапуска DC, и чинится только перезапуском bluetoothd
+         (README, вариант Г). Для Bluetooth лучше вариант Д.                -->
+
+    <!-- ВАРИАНТ Д: Bluetooth через мост btbridge — без /dev/cu.* и его сбоев.
+         Терминал сопряжён с маком, на терминале связь с кассой BLUETOOTH.
+         install.sh находит терминал и ставит мост (LaunchAgent ru.inpas.btbridge),
+         который открывает канал RFCOMM сам; DC подключается к нему как к
+         IP-терминалу. Вручную в Пункте управления терминал не подключайте.
+         Проверка:  dcctl bt status  /  dcctl bt probe
+
+    <CONNECTION_TYPE>IP</CONNECTION_TYPE>
+    <IPADDRESS>127.0.0.1:27017</IPADDRESS>
+                                                                           -->
 
     <!-- Таймауты -->
     <WAITACK>5</WAITACK>

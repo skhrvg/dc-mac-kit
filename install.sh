@@ -1,15 +1,17 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 #
-# DC Linux Service (INPAS DualConnector) 2.0.17.7 — установка на macOS Apple Silicon.
+# DC Linux Service (INPAS DualConnector) 2.0.17.7 / 2.1.0.15 — установка на macOS Apple Silicon.
 #
-# Ни один файл дистрибутива не модифицируется. Совместимость достигается тремя
+# Ни один файл дистрибутива не модифицируется. Совместимость достигается
 # внешними рычагами (подробности — в bin/dcservice-run.sh и README):
 #   1) -Dos.name=Linux — иначе FactoryCommunication не создаёт НИ ОДНОГО устройства:
 #      в его switch по OSType есть только WINDOWS/LINUX/ANDROID, MAC_OS уходит в
 #      default: return null. Это корень ошибки "Can't open device ...null";
 #   2) подмена jssc через порядок classpath (встроенная 2.9.2 без нативов под arm64);
-#   3) libjssc.dylib на java.library.path, в обход сломанного детекта архитектуры.
+#   3) libjssc.dylib на java.library.path, в обход сломанного детекта архитектуры;
+#   4) с DC 2.1 — libjSerialComm.dylib там же: из-за п. 1 jSerialComm иначе
+#      берёт Linux-сборку .so, и обмен по COM/Bluetooth рвётся без ответа.
 #
 # Запускать из папки macos-kit внутри распакованного дистрибутива:
 #   ./install.sh
@@ -21,6 +23,9 @@
 #   JSSC_JAR_PATH=/path.jar   взять локальный jar вместо скачивания
 #   DC_DIST=/path/to/dist     где лежит распакованный дистрибутив DC (по умолчанию ..)
 #   BRIDGE_PORT=27016         порт моста USB для PAX (paxbridge)
+#   BT_DEVICE=UNIPOS          терминал для моста Bluetooth (имя или адрес; по умолчанию
+#                             ищется единственное сопряжённое устройство с последовательным портом)
+#   BT_PORT=27017             порт моста Bluetooth (btbridge)
 #
 set -euo pipefail
 
@@ -36,6 +41,12 @@ BLABEL="ru.inpas.paxbridge"
 BPLIST="/Library/LaunchDaemons/${BLABEL}.plist"
 BRIDGE_PORT="${BRIDGE_PORT:-27016}"
 
+# Мост Bluetooth (btbridge) — LaunchAgent пользователя RUN_USER (см. раздел моста ниже)
+BTLABEL="ru.inpas.btbridge"
+BT_PORT="${BT_PORT:-27017}"
+BT_DEVICE="${BT_DEVICE:-}"
+BT_APP="$PREFIX/btbridge/BTBridge.app"
+
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Каталог распакованного дистрибутива DC Linux Service. По умолчанию комплект
 # лежит внутри него (macos-kit рядом с files/, Scheme/, Documents/);
@@ -45,6 +56,13 @@ SRC="$DIST_DIR/files"
 
 RUN_USER="${RUN_USER:-$(id -un)}"
 RUN_GROUP="$(id -gn "$RUN_USER")"
+RUN_UID="$(id -u "$RUN_USER")"
+RUN_HOME="$(dscl . -read "/Users/$RUN_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+
+# мост Bluetooth живёт в сессии RUN_USER: его LaunchAgents, его база TCC
+BTPLIST="${RUN_HOME}/Library/LaunchAgents/${BTLABEL}.plist"
+AS_USER=""
+[ "$(id -un)" != "$RUN_USER" ] && AS_USER="sudo -u $RUN_USER"
 
 msg()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -145,6 +163,31 @@ $SUDO rm -f "$PREFIX/native/libjssc.dylib"
 $SUDO unzip -o -j "$PREFIX/lib/$JSSC_JAR" "$NATIVE_SRC" -d "$PREFIX/native" >/dev/null \
   || die "в $JSSC_JAR нет $NATIVE_SRC — возьмите версию jssc 2.9.3 или новее"
 msg "нативная библиотека: $NATIVE_SRC → $PREFIX/native/libjssc.dylib"
+
+# Нативная библиотека jSerialComm — с DC 2.1 обмен по COM идёт через неё, а не через jssc.
+#
+# jSerialComm выбирает сборку по os.name, а оно подменено на Linux: распаковывает
+# libjSerialComm.so, и dlopen её отвергает («slice is not valid mach-o file»).
+# UnsatisfiedLinkError летит из Serial.init() мимо catch (Exception), поток
+# HTTP-обработчика умирает, касса получает оборванное соединение без ответа.
+# Но до распаковки jSerialComm делает System.loadLibrary("jSerialComm"), а имя
+# файла для него JVM строит по настоящей ОС — libjSerialComm.dylib. Кладём туда
+# маковскую сборку из того же dcservice.jar, рядом с libjssc.dylib.
+case "$JAVA_ARCH" in
+  aarch64) JSC_SRC="OSX/aarch64/libjSerialComm.jnilib" ;;
+  *)       JSC_SRC="OSX/x86_64/libjSerialComm.jnilib" ;;
+esac
+$SUDO rm -f "$PREFIX/native/libjSerialComm.dylib"
+if unzip -l "$PREFIX/dcservice.jar" "$JSC_SRC" >/dev/null 2>&1; then
+  unzip -p "$PREFIX/dcservice.jar" "$JSC_SRC" | $SUDO tee "$PREFIX/native/libjSerialComm.dylib" >/dev/null
+  msg "нативная библиотека: dcservice.jar!/$JSC_SRC → $PREFIX/native/libjSerialComm.dylib"
+else
+  msg "в dcservice.jar нет jSerialComm (DC до 2.1) — пропускаю"
+fi
+# Если установку запускает процесс, который помечает созданные файлы карантином,
+# dlopen откажет: «library load disallowed by system policy». Снимаем заранее.
+$SUDO xattr -dr com.apple.quarantine "$PREFIX/native" 2>/dev/null || true
+
 for t in JsscCheck.java TcpProbe.java; do
   [ -f "$KIT_DIR/$t" ] && $SUDO cp "$KIT_DIR/$t" "$PREFIX/tools/$t"
 done
@@ -218,7 +261,8 @@ $SUDO tee "$PREFIX/bin/dcservice-run.sh" >/dev/null <<'RUNEOF'
 #   2) jssc из lib/ идёт ПЕРВЫМ в classpath и перекрывает встроенную 2.9.2;
 #   3) -Djava.library.path на native/ — чтобы System.loadLibrary("jssc")
 #      сработал раньше, чем в дело вступит старый scijava из dcservice.jar,
-#      не умеющий mac+aarch64.
+#      не умеющий mac+aarch64. С DC 2.1 там же libjSerialComm.dylib: из-за
+#      п. 1 jSerialComm иначе распакует Linux-сборку и не загрузится.
 set -euo pipefail
 
 PREFIX="__PREFIX__"
@@ -257,9 +301,21 @@ PREFIX="__PREFIX__"
 BLABEL="ru.inpas.paxbridge"
 BPLIST="/Library/LaunchDaemons/${BLABEL}.plist"
 BRIDGE_PORT="__BRIDGE_PORT__"
+# мост Bluetooth — LaunchAgent в сессии пользователя, а не системная служба
+BTLABEL="ru.inpas.btbridge"
+BTPLIST="__BTPLIST__"
+BT_PORT="__BT_PORT__"
+BT_UID="__BT_UID__"
+BT_USER="__BT_USER__"
+BT_APP="$PREFIX/btbridge/BTBridge.app"
 
 loaded()  { launchctl print system/"$LABEL"  >/dev/null 2>&1; }
 bloaded() { launchctl print system/"$BLABEL" >/dev/null 2>&1; }
+btloaded() { launchctl print gui/"$BT_UID"/"$BTLABEL" >/dev/null 2>&1; }
+# терминал моста — из его plist, чтобы источник был один
+bt_device() { /usr/libexec/PlistBuddy -c "Print :ProgramArguments" "$BTPLIST" 2>/dev/null | awk 'p { print $1; exit } $1 == "--device" { p = 1 }'; }
+# в сессии пользователя моста: его launchd-домен, его разрешение на Bluetooth
+as_bt() { if [ "$(id -u)" = "$BT_UID" ]; then "$@"; else sudo launchctl asuser "$BT_UID" sudo -u "$BT_USER" "$@"; fi; }
 
 case "${1:-}" in
   start)
@@ -305,6 +361,11 @@ case "${1:-}" in
       if bloaded; then b=$(launchctl print system/"$BLABEL" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)
       else b="не загружен"; fi
       echo "  мост USB (paxbridge): ${b:-?}, порт $BRIDGE_PORT"
+    fi
+    if [ -f "$BTPLIST" ]; then
+      if btloaded; then b=$(launchctl print gui/"$BT_UID"/"$BTLABEL" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)
+      else b="не загружен"; fi
+      echo "  мост Bluetooth (btbridge): ${b:-?}, порт $BT_PORT, терминал $(bt_device)"
     fi
     cfg="$PREFIX/service/config/connector.xml"
     # многострочные XML-комментарии надо выкидывать целиком, иначе в сводку
@@ -514,11 +575,61 @@ case "${1:-}" in
       *) echo "использование: dcctl bridge {start|stop|restart|status|log|probe}" ;;
     esac
     ;;
-  *) echo "использование: dcctl {start|stop|restart|status|check|fg|probe|log|logdir|config|ports|jssc|gui|bridge}" ;;
+  bt)
+    # Мост TCP <-> Bluetooth RFCOMM (вариант Д). Это LaunchAgent в сессии
+    # пользователя: доступ к Bluetooth TCC выдаёт приложению этого пользователя.
+    [ -f "$BTPLIST" ] || { echo "мост Bluetooth не установлен — нужен сопряжённый терминал, затем ./install.sh (или BT_DEVICE=… ./install.sh)"; exit 1; }
+    case "${2:-status}" in
+      start)
+        if btloaded; then echo "мост Bluetooth уже загружен"
+        else as_bt launchctl bootstrap gui/"$BT_UID" "$BTPLIST" && echo "мост Bluetooth запущен"; fi ;;
+      stop)
+        if btloaded; then
+          as_bt launchctl bootout gui/"$BT_UID"/"$BTLABEL"
+          for i in $(seq 1 20); do btloaded || break; sleep 0.5; done
+          echo "мост Bluetooth остановлен"
+        else echo "мост Bluetooth не загружен"; fi ;;
+      restart)
+        if btloaded; then as_bt launchctl kickstart -k gui/"$BT_UID"/"$BTLABEL" && echo "мост Bluetooth перезапущен"
+        else as_bt launchctl bootstrap gui/"$BT_UID" "$BTPLIST" && echo "мост Bluetooth запущен"; fi ;;
+      status)
+        if btloaded; then
+          launchctl print gui/"$BT_UID"/"$BTLABEL" 2>/dev/null \
+            | awk '/^[[:space:]]*(state|pid|last exit code|program) = / { if (!($1 in seen)) { seen[$1] = 1; sub(/^[[:space:]]*/, "  "); print } }'
+        else echo "  launchd: мост Bluetooth не загружен"; fi
+        if nc -z -G 2 127.0.0.1 "$BT_PORT" 2>/dev/null; then echo "  127.0.0.1:$BT_PORT слушается"
+        else echo "  127.0.0.1:$BT_PORT НЕ слушается"; fi
+        echo "  терминал: $(bt_device)"
+        ;;
+      log) tail -n 100 -f "$PREFIX/service/log/btbridge.log" ;;
+      probe|list)
+        # Запуск через open: доступ к Bluetooth выдан BTBridge.app, а процесс,
+        # запущенный прямо из терминала, получил бы права терминала.
+        # На время теста мост останавливаем, чтобы не столкнуться с запросом DC.
+        was=0
+        if [ "$2" = probe ] && btloaded; then
+          was=1; as_bt launchctl bootout gui/"$BT_UID"/"$BTLABEL"
+          for i in $(seq 1 20); do btloaded || break; sleep 0.5; done
+        fi
+        out=$(mktemp /tmp/btbridge.XXXXXX); chmod 666 "$out"
+        if [ "$2" = probe ]; then set -- --probe --device "$(bt_device)"; else set -- --list; fi
+        as_bt open -n -W --stdout "$out" --stderr "$out" "$BT_APP" --args "$@"
+        cat "$out"
+        rc=0; [ "$1" = --probe ] && ! grep -q '^OK' "$out" && rc=1
+        rm -f "$out"
+        if [ "$was" = 1 ]; then as_bt launchctl bootstrap gui/"$BT_UID" "$BTPLIST"; fi
+        exit $rc
+        ;;
+      *) echo "использование: dcctl bt {start|stop|restart|status|log|probe|list}" ;;
+    esac
+    ;;
+  *) echo "использование: dcctl {start|stop|restart|status|check|fg|probe|log|logdir|config|ports|jssc|gui|bridge|bt}" ;;
 esac
 CTLEOF
 
-$SUDO sed -i '' -e "s#__PREFIX__#${PREFIX}#g" -e "s#__BRIDGE_PORT__#${BRIDGE_PORT}#g" "$PREFIX/bin/dcctl"
+$SUDO sed -i '' -e "s#__PREFIX__#${PREFIX}#g" -e "s#__BRIDGE_PORT__#${BRIDGE_PORT}#g" \
+  -e "s#__BTPLIST__#${BTPLIST}#g" -e "s#__BT_PORT__#${BT_PORT}#g" \
+  -e "s#__BT_UID__#${RUN_UID}#g" -e "s#__BT_USER__#${RUN_USER}#g" "$PREFIX/bin/dcctl"
 $SUDO chmod 755 "$PREFIX/bin/dcctl"
 
 # ------------------------------------------------------------------- launchd
@@ -666,6 +777,135 @@ BPLISTEOF
   fi
 fi
 
+# ------------------------------------------------- мост Bluetooth (btbridge)
+#
+# Вариант Д: терминал по Bluetooth через собственный мост RFCOMM <-> TCP.
+# Последовательный порт /dev/cu.<терминал> на macOS 26 идёт через мост Serial
+# Port в bluetoothd, а тот ломается от ручного «Подключить» и от повторного
+# открытия порта (подробности — в btbridge.swift и README). btbridge открывает
+# канал RFCOMM сам, DC подключается к нему как к IP-терминалу.
+#
+# Доступ к Bluetooth TCC выдаёт приложению в сессии пользователя, поэтому мост —
+# это BTBridge.app под LaunchAgent пользователя RUN_USER, а не LaunchDaemon.
+# Ставим, только если есть сопряжённый Bluetooth-терминал (или задан BT_DEVICE):
+# при старте мост запрашивает доступ к Bluetooth, и тем, кому он не нужен,
+# этот запрос ни к чему.
+if [ -z "$BT_DEVICE" ]; then
+  # сопряжённые устройства с последовательным портом, кроме входящего порта самого мака
+  BT_FOUND=$(ioreg -r -d1 -c IOBluetoothDevice -l -w0 2>/dev/null | awk -F'"' '
+    function flush() {
+      if (name != "" && name != "Bluetooth-Incoming-Port" && addr != "")
+        print substr(addr,1,2) "-" substr(addr,3,2) "-" substr(addr,5,2) "-" substr(addr,7,2) "-" substr(addr,9,2) "-" substr(addr,11,2), name
+      name = ""; addr = ""
+    }
+    /\+-o / { flush() }
+    /"BTTTYName" =/ { name = $4 }
+    /"BTAddress" =/ { addr = $0; sub(/.*</, "", addr); sub(/>.*/, "", addr) }
+    END { flush() }' || true)
+  case "$(printf '%s' "$BT_FOUND" | grep -c .)" in
+    0) ;;
+    1) BT_DEVICE="${BT_FOUND%% *}"; msg "Bluetooth-терминал: ${BT_FOUND#* } ($BT_DEVICE)" ;;
+    *) warn "сопряжённых Bluetooth-устройств с последовательным портом несколько — мост Bluetooth не ставлю."
+       printf '%s\n' "$BT_FOUND" | sed 's/^/      /'
+       warn "Выберите терминал и повторите:  BT_DEVICE=<адрес> ./install.sh" ;;
+  esac
+fi
+
+BT_OK=0
+if [ -n "$BT_DEVICE" ] && [ -f "$KIT_DIR/btbridge.swift" ]; then
+  if ! command -v swiftc >/dev/null; then
+    warn "swiftc не найден — мост Bluetooth не собран. Поставьте инструменты:  xcode-select --install"
+  else
+    msg "собираю мост Bluetooth (btbridge)"
+    BT_TMP="$(mktemp -d)"
+    mkdir -p "$BT_TMP/BTBridge.app/Contents/MacOS"
+    if swiftc -O -o "$BT_TMP/BTBridge.app/Contents/MacOS/btbridge" "$KIT_DIR/btbridge.swift" -framework IOBluetooth; then
+      cat > "$BT_TMP/BTBridge.app/Contents/Info.plist" <<BTINFOEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>${BTLABEL}</string>
+    <key>CFBundleName</key>
+    <string>BTBridge</string>
+    <key>CFBundleExecutable</key>
+    <string>btbridge</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Мост DC Service: связь с платёжным терминалом по Bluetooth.</string>
+</dict>
+</plist>
+BTINFOEOF
+      codesign -s - -f --identifier "$BTLABEL" "$BT_TMP/BTBridge.app" >/dev/null 2>&1 \
+        || warn "codesign не подписал BTBridge.app — доступ к Bluetooth может не выдаться"
+      # Разрешение TCC привязано к подписи сборки, а ad-hoc-подпись меняется вместе
+      # с бинарником. Со старой записью TCC молча отказывает и заново не спрашивает,
+      # поэтому при новой сборке запись сбрасываем — мост спросит доступ при старте.
+      if cmp -s "$BT_TMP/BTBridge.app/Contents/MacOS/btbridge" "$BT_APP/Contents/MacOS/btbridge"; then
+        msg "сборка моста не изменилась — разрешение на Bluetooth сохраняется"
+      else
+        $SUDO rm -rf "$BT_APP"
+        $SUDO mkdir -p "$PREFIX/btbridge"
+        $SUDO cp -R "$BT_TMP/BTBridge.app" "$PREFIX/btbridge/"
+        $SUDO xattr -dr com.apple.quarantine "$BT_APP" 2>/dev/null || true
+        $AS_USER tccutil reset BluetoothAlways "$BTLABEL" >/dev/null 2>&1 || true
+        BT_NEW=1
+      fi
+      BT_OK=1
+    else
+      warn "мост Bluetooth не собрался — смотрите ошибки swiftc выше"
+    fi
+    rm -rf "$BT_TMP"
+  fi
+fi
+
+if [ "$BT_OK" -eq 1 ]; then
+  $AS_USER mkdir -p "$(dirname "$BTPLIST")"
+  $AS_USER tee "$BTPLIST" >/dev/null <<BTPLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${BTLABEL}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>${BT_APP}/Contents/MacOS/btbridge</string>
+        <string>--serve</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>${BT_PORT}</string>
+        <string>--device</string>
+        <string>${BT_DEVICE}</string>
+    </array>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>${PREFIX}/service/log/btbridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>${PREFIX}/service/log/btbridge.log</string>
+</dict>
+</plist>
+BTPLISTEOF
+  plutil -lint "$BTPLIST" >/dev/null || die "plist моста Bluetooth не прошёл проверку"
+fi
+
 # Права. Файлы дистрибутива могут лежать с режимом 600 — sudo cp копирует его как есть,
 # и тогда jar'ы читает только root, а служба крутится от $RUN_USER и падает на старте.
 msg "выставляю права"
@@ -722,6 +962,28 @@ if [ -f "$BPLIST" ]; then
   fi
 fi
 
+# мост Bluetooth — LaunchAgent, грузится в сессию RUN_USER
+if [ "$BT_OK" -eq 1 ]; then
+  if launchctl print "gui/$RUN_UID" >/dev/null 2>&1; then
+    $AS_USER launchctl bootout "gui/$RUN_UID/$BTLABEL" 2>/dev/null || true
+    for i in $(seq 1 20); do
+      launchctl print "gui/$RUN_UID/$BTLABEL" >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+    if err=$($AS_USER launchctl bootstrap "gui/$RUN_UID" "$BTPLIST" 2>&1); then
+      msg "мост Bluetooth запущен на 127.0.0.1:$BT_PORT, терминал $BT_DEVICE  (вариант Д: CONNECTION_TYPE=IP, IPADDRESS=127.0.0.1:$BT_PORT)"
+      if [ "${BT_NEW:-0}" -eq 1 ]; then
+        warn "macOS спросит, разрешить ли BTBridge доступ к Bluetooth, — разрешите."
+        warn "Проверка связи с терминалом:  $PREFIX/bin/dcctl bt probe"
+      fi
+    else
+      warn "не удалось загрузить мост Bluetooth: $err"
+    fi
+  else
+    warn "$RUN_USER не вошёл в систему — мост Bluetooth запустится при его входе"
+  fi
+fi
+
 if [ "$FRESH_CONFIG" -eq 1 ]; then
   warn "connector.xml создан из шаблона — ОТРЕДАКТИРУЙТЕ его перед стартом:"
   echo "    sudo $PREFIX/bin/dcctl config"
@@ -730,6 +992,7 @@ if [ "$FRESH_CONFIG" -eq 1 ]; then
   echo "    А  USB-CDC / COM:  CONNECTION_TYPE=COM, CONNECTION_PORT=/dev/cu.*"
   echo "    Б  сеть:           CONNECTION_TYPE=IP,  IPADDRESS=<ip терминала>:<порт>"
   echo "    В  PAX по USB:     CONNECTION_TYPE=IP,  IPADDRESS=127.0.0.1:$BRIDGE_PORT"
+  echo "    Д  Bluetooth:      CONNECTION_TYPE=IP,  IPADDRESS=127.0.0.1:$BT_PORT  (мост btbridge)"
   echo
   echo "  Видимые последовательные порты:"
   ls -1 /dev/cu.* 2>/dev/null | sed 's/^/    /' || echo "    (нет)"
@@ -742,5 +1005,5 @@ else
 fi
 
 echo
-msg "готово. Управление:  $PREFIX/bin/dcctl {start|stop|restart|status|log|ports|jssc|bridge}"
+msg "готово. Управление:  $PREFIX/bin/dcctl {start|stop|restart|status|log|ports|jssc|bridge|bt}"
 msg "для удобства:  sudo ln -sf $PREFIX/bin/dcctl /usr/local/bin/dcctl"

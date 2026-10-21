@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Проверка, что нативная библиотека jssc грузится на этой машине.
+// Проверка, что нативные библиотеки jssc и (с DC 2.1) jSerialComm грузятся на этой машине.
 //
 // Запуск (JDK 11+, single-file source mode):
 //   java -Djava.library.path=/opt/dcservice/native \
@@ -57,5 +57,40 @@ public class JsscCheck {
         }
         System.out.println();
         System.out.println("OK: нативная часть jssc работает.");
+
+        checkJSerialComm();
+    }
+
+    // С DC 2.1 обмен по COM идёт через jSerialComm. Служба работает с
+    // os.name=Linux, а jSerialComm выбирает сборку именно по нему: без
+    // libjSerialComm.dylib на java.library.path он распакует Linux-.so и упадёт.
+    // Повторяем условия службы: подменяем os.name до первой загрузки класса.
+    private static void checkJSerialComm() {
+        final String cls = "com.fazecast.jSerialComm.SerialPort";
+        try {
+            Class.forName(cls, false, JsscCheck.class.getClassLoader());
+        } catch (ClassNotFoundException e) {
+            System.out.println("jSerialComm       = нет в dcservice.jar (DC до 2.1), не нужен");
+            return;
+        }
+        System.setProperty("os.name", "Linux");
+        try {
+            Object v = Class.forName(cls).getMethod("getVersion").invoke(null);
+            System.out.println("jSerialComm       = " + v + " (при os.name=Linux, как у службы)");
+            System.out.println("OK: нативная часть jSerialComm работает.");
+        } catch (Throwable t) {
+            Throwable c = t;
+            while (c.getCause() != null) c = c.getCause();
+            String msg = String.valueOf(c);
+            System.out.println("jSerialComm       = НЕ ЗАГРУЗИЛСЯ: " + msg.lines().limit(3).reduce((a, b) -> a + " | " + b).orElse(msg));
+            System.out.println();
+            System.out.println("Обмен по COM и Bluetooth работать не будет: DC оборвёт запрос без ответа.");
+            System.out.println("Что проверить:");
+            System.out.println("  1. no jSerialComm in java.library.path — нет libjSerialComm.dylib,");
+            System.out.println("     перезапустите install.sh: он достаёт её из dcservice.jar.");
+            System.out.println("  2. code signature / disallowed by system policy — снимите карантин:");
+            System.out.println("       xattr -dr com.apple.quarantine /opt/dcservice/native");
+            System.exit(1);
+        }
     }
 }

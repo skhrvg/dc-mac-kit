@@ -19,9 +19,24 @@ msg() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 BLABEL="ru.inpas.paxbridge"
 BPLIST="/Library/LaunchDaemons/${BLABEL}.plist"
 
-msg "останавливаю службу и мост USB"
+# мост Bluetooth — LaunchAgent пользователя, под которым крутилась служба
+RUN_USER="${RUN_USER:-$(id -un)}"
+RUN_UID="$(id -u "$RUN_USER")"
+RUN_HOME="$(dscl . -read "/Users/$RUN_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+BTLABEL="ru.inpas.btbridge"
+BTPLIST="${RUN_HOME}/Library/LaunchAgents/${BTLABEL}.plist"
+AS_USER=""
+[ "$(id -un)" != "$RUN_USER" ] && AS_USER="sudo -u $RUN_USER"
+
+msg "останавливаю службу и мосты"
 $SUDO launchctl bootout system/"$LABEL" 2>/dev/null || true
 $SUDO launchctl bootout system/"$BLABEL" 2>/dev/null || true
+$AS_USER launchctl bootout "gui/$RUN_UID/$BTLABEL" 2>/dev/null || true
+if [ -f "$BTPLIST" ]; then
+  $AS_USER rm -f "$BTPLIST"
+  $AS_USER tccutil reset BluetoothAlways "$BTLABEL" >/dev/null 2>&1 || true
+  msg "удалён $BTPLIST"
+fi
 
 for f in "$PLIST" "$BPLIST"; do
   if [ -f "$f" ]; then
@@ -49,7 +64,7 @@ if [ "${1:-}" = "--purge" ]; then
   esac
 else
   $SUDO rm -f "$PREFIX/dcservice.jar"
-  $SUDO rm -rf "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/native" "$PREFIX/tools" "$PREFIX/bridge"
+  $SUDO rm -rf "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/native" "$PREFIX/tools" "$PREFIX/bridge" "$PREFIX/btbridge"
   msg "программные файлы удалены, $PREFIX/service (конфиг и логи) оставлен"
 fi
 
